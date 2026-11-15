@@ -698,6 +698,31 @@
     renderParticipants();
     if (state.isHost) broadcastParticipants();
     else sendToHost({ t: 'mute', muted });
+    try {
+      playMuteSound(muted);
+    } catch (err) {
+      console.warn('[som do microfone]', err);
+    }
+  }
+
+  function playMuteSound(muted) {
+    const ctx = Speaking.audioCtx();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const start = ctx.currentTime;
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(muted ? 420 : 660, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.06, start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.11);
+    oscillator.connect(gain).connect(ctx.destination);
+    oscillator.addEventListener('ended', () => {
+      oscillator.disconnect();
+      gain.disconnect();
+    }, { once: true });
+    oscillator.start(start);
+    oscillator.stop(start + 0.12);
   }
 
   function updateMicButton() {

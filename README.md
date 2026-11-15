@@ -10,7 +10,7 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
 - Controles próprios da sala: **voltar 30s**, **play/pausar**, **avançar 30s** e barra de progresso
   - Atalhos: **Espaço**/**K** para play/pausar, **←**/**J** para voltar 30s, **→**/**L** para avançar 30s
   - Arrastar a barra do próprio YouTube também sincroniza
-- Voz em tempo real via WebRTC, com botão de mudo (atalho **M**) e indicador de quem está falando
+- Voz em tempo real via WebRTC, com botão de mudo (atalho **M**), confirmação sonora ao mutar/desmutar e indicador de quem está falando
 - **Anti-ruído com IA** (desligado por padrão, ativável na barra superior): reduz ruídos de fundo
   - Filtro passa-alta: corta graves como batidas na mesa e pancadas
   - [RNNoise](https://github.com/xiph/rnnoise) (rede neural): remove chiado, ventilador e teclado, e silencia trechos em que não detecta voz
