@@ -28,14 +28,17 @@
     myName: '',
     hostConn: null,
     lastHostMsg: 0,
+    reconnecting: false,
+    hostRetryAt: 0,
+    filterReadyPromise: null,
     conns: new Map(),        // anfitrião: peerId -> DataConnection
-    lastSeen: new Map(),     // anfitrião: peerId -> timestamp
     participants: new Map(), // peerId -> { id, name, muted, isHost }
     calls: new Map(),        // peerId -> MediaConnection
     audioEls: new Map(),     // peerId -> HTMLAudioElement
     chat: [],                // histórico mantido pelo anfitrião para quem chega depois
     video: { url: null },
     localStream: null,
+    rawStream: null,
     micAvailable: false,
     micRequestPending: false,
     muted: true,
@@ -484,7 +487,7 @@
 
   /* ================= Redução de ruído (RNNoise) ================= */
 
-  // Cadeia: microfone -> passa-alta (graves) -> RNNoise (IA + detecção de voz) -> gate de voz -> envio.
+  // O áudio sem filtro usa a captura direta, independente do AudioContext.
   const NoiseFilter = (() => {
     const PATH = 'vendor/noise-suppressor/';
     const SIMD_PROBE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
@@ -503,16 +506,21 @@
     async function prepare() {
       if (preparation) return preparation;
       preparation = (async () => {
+        let timer;
         try {
           if (!window.AudioWorkletNode || !window.WebAssembly) return false;
           ctx = new AudioContext({ sampleRate: 48000 });
           const resume = ctx.resume();
           const wasmFile = WebAssembly.validate(SIMD_PROBE) ? 'rnnoise_simd.wasm' : 'rnnoise.wasm';
-          [wasm] = await Promise.all([
-            fetch(PATH + wasmFile).then((r) => { if (!r.ok) throw new Error('wasm ' + r.status); return r.arrayBuffer(); }),
-            ctx.audioWorklet.addModule(PATH + 'rnnoiseWorklet.js'),
-            ctx.audioWorklet.addModule('audio/voiceGateWorklet.js'),
-            resume,
+          [wasm] = await Promise.race([
+            Promise.all([
+              fetch(PATH + wasmFile).then((r) => { if (!r.ok) throw new Error('wasm ' + r.status); return r.arrayBuffer(); }),
+              ctx.audioWorklet.addModule(PATH + 'rnnoiseWorklet.js'),
+              resume,
+            ]),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Tempo esgotado ao preparar redução de ruído')), 5000);
+            }),
           ]);
           if (ctx.state !== 'running') throw new Error('AudioContext não iniciou');
           return true;
@@ -520,6 +528,8 @@
           console.warn('[anti-ruído] indisponível:', err);
           destroy();
           return false;
+        } finally {
+          clearTimeout(timer);
         }
       })();
       return preparation;
@@ -533,20 +543,23 @@
         source = ctx.createMediaStreamSource(raw);
         const highpass = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 100, Q: 0.7 });
         const rnnoise = new AudioWorkletNode(ctx, '@sapphi-red/web-noise-suppressor/rnnoise', {
-          ...mono, processorOptions: { maxChannels: 1, wasmBinary: wasm, vad: { threshold: 0.6, holdFrames: 20, releaseStep: 0.2 } },
-        });
-        const gate = new AudioWorkletNode(ctx, 'cinemaonline-voice-gate', {
-          ...mono, processorOptions: { openDb: -46, closeDb: -54, minSpeechMs: 90, holdMs: 300, lookaheadMs: 100 },
+          ...mono, processorOptions: { maxChannels: 1, wasmBinary: wasm },
         });
         dest = ctx.createMediaStreamDestination();
         dest.channelCount = 1;
-        highpass.connect(rnnoise).connect(gate).connect(dest);
+        highpass.connect(rnnoise).connect(dest);
         chainIn = highpass;
-        nodes = [highpass, rnnoise, gate];
+        nodes = [highpass, rnnoise];
         route();
         if (ctx.state !== 'running') throw new Error('AudioContext suspenso');
+        rnnoise.addEventListener('processorerror', () => fallbackNoiseFilter('O processador de redução de ruído parou.'));
+        ctx.addEventListener('statechange', () => {
+          if (available && enabled && ctx && ctx.state !== 'running' && !state.ended) {
+            fallbackNoiseFilter('A redução de ruído foi suspensa pelo navegador.');
+          }
+        });
         available = true;
-        return dest.stream;
+        return startEnabled ? dest.stream : raw;
       } catch (err) {
         console.warn('[anti-ruído] falha ao montar filtro:', err);
         rawStream = null;
@@ -556,19 +569,20 @@
     }
 
     function route() {
-      const next = enabled ? chainIn : dest;
+      const next = enabled ? chainIn : null;
       if (next === activeRoute) return;
-      source.connect(next);
+      if (next) source.connect(next);
       if (activeRoute) source.disconnect(activeRoute);
       activeRoute = next;
     }
 
     async function setEnabled(on) {
       if (!available || !ctx) throw new Error('Redução de ruído indisponível');
-      if (ctx.state !== 'running') await ctx.resume();
-      if (ctx.state !== 'running') throw new Error('AudioContext suspenso');
+      if (on && ctx.state !== 'running') await ctx.resume();
+      if (on && ctx.state !== 'running') throw new Error('AudioContext suspenso');
       enabled = on;
-      if (available) route();
+      route();
+      return on ? dest.stream : rawStream;
     }
 
     function destroy() {
@@ -576,7 +590,6 @@
         try { if (n.port) n.port.postMessage('destroy'); n.disconnect(); } catch { /* ignora */ }
       });
       nodes = [];
-      if (rawStream) rawStream.getTracks().forEach((t) => t.stop());
       rawStream = null;
       if (ctx) ctx.close().catch(() => {});
       ctx = null;
@@ -610,28 +623,108 @@
     });
   }
 
-  async function setupMic(filterReadyPromise = NoiseFilter.prepare()) {
+  function publishMicrophoneState() {
+    updateMicButton();
+    updateNoiseButton();
+    const me = state.participants.get(state.myId);
+    if (me) me.muted = state.muted;
+    if (!state.joined || state.ended) return;
+    renderParticipants();
+    if (state.isHost) broadcastParticipants();
+    else sendToHost({ t: 'mute', muted: state.muted });
+  }
+
+  async function setLocalStream(stream) {
+    const track = stream.getAudioTracks()[0];
+    if (!track || track.readyState === 'ended') throw new Error('Faixa de áudio indisponível');
+    track.enabled = !state.muted;
+    state.localStream = stream;
+    for (const [id, call] of state.calls) {
+      try {
+        const pc = call.peerConnection;
+        const sender = pc && pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+        if (!sender) {
+          restartCall(id);
+          continue;
+        }
+        await sender.replaceTrack(track);
+      } catch (err) {
+        console.warn('[voz] renegociando envio de áudio:', err);
+        if (state.calls.get(id) === call) restartCall(id);
+      }
+    }
+    if (state.ended) return;
+    maintainCalls();
+    if (state.micAvailable && state.myId) Speaking.add(state.myId, stream);
+  }
+
+  async function setupMic(filterReadyPromise = NoiseFilter.prepare(), retry = false) {
     Speaking.audioCtx();
     const wantFilter = localStorage.getItem('cinemaonline:anti-ruido') === 'on';
-    const filterReady = await filterReadyPromise;
-    if (state.ended) return;
+    state.micRequestPending = true;
+    updateMicButton();
+    let raw;
     try {
-      const raw = await requestMicrophone(!(filterReady && wantFilter));
+      raw = await requestMicrophone();
+      const filterReady = await filterReadyPromise;
       if (state.ended) {
-        raw.getTracks().forEach((track) => track.stop());
         return;
       }
-      state.localStream = filterReady ? NoiseFilter.build(raw, wantFilter) : raw;
+      const previousStream = state.localStream;
+      const previousRaw = state.rawStream;
+      state.rawStream = raw;
       state.micAvailable = true;
       state.muted = false;
-    } catch {
+      raw.getAudioTracks()[0].addEventListener('ended', () => {
+        if (state.rawStream !== raw || state.ended) return;
+        state.micAvailable = false;
+        state.muted = true;
+        state.rawStream = null;
+        NoiseFilter.destroy();
+        publishMicrophoneState();
+        setLocalStream(Speaking.audioCtx().createMediaStreamDestination().stream).catch((err) => {
+          console.error('[microfone] falha ao manter recepção:', err);
+          toast('A conexão de voz precisa ser recuperada. Clique no microfone para tentar novamente.', 'warn');
+        });
+        toast('O microfone foi desconectado ou perdeu a permissão. Clique no microfone para ativá-lo novamente.', 'warn', 7000);
+      });
+      await setLocalStream(filterReady ? NoiseFilter.build(raw, wantFilter) : raw);
+      if (previousStream && previousStream !== previousRaw) previousStream.getTracks().forEach((t) => t.stop());
+      if (previousRaw) previousRaw.getTracks().forEach((t) => t.stop());
+      publishMicrophoneState();
+    } catch (err) {
       if (state.ended) return;
-      // Stream silencioso: permite participar ouvindo os outros mesmo sem microfone.
+      console.warn('[microfone]', err);
       NoiseFilter.destroy();
-      state.localStream = Speaking.audioCtx().createMediaStreamDestination().stream;
+      if (!state.localStream) state.localStream = Speaking.audioCtx().createMediaStreamDestination().stream;
       state.micAvailable = false;
       state.muted = true;
-      toast('Microfone indisponível — você entrará apenas ouvindo.', 'warn', 5000);
+      publishMicrophoneState();
+      const denied = err.name === 'NotAllowedError' || err.name === 'SecurityError';
+      toast(retry && denied
+        ? 'O acesso ao microfone está bloqueado. Abra as permissões deste site no navegador (ícone ao lado do endereço), permita o microfone e tente novamente.'
+        : 'Microfone indisponível — você pode ouvir os outros. Clique no microfone para permitir o acesso ou tentar novamente.', 'warn', 7000);
+    } finally {
+      if (raw && (state.ended || state.rawStream !== raw)) raw.getTracks().forEach((t) => t.stop());
+      state.micRequestPending = false;
+      updateMicButton();
+    }
+  }
+
+  async function fallbackNoiseFilter(reason) {
+    if (state.ended || !state.rawStream) return;
+    console.warn('[anti-ruído]', reason);
+    NoiseFilter.destroy();
+    try {
+      await setLocalStream(state.rawStream);
+      publishMicrophoneState();
+      toast('A redução de ruído com IA falhou. O microfone continua com o áudio direto.', 'warn', 6000);
+    } catch (err) {
+      console.error('[anti-ruído] falha ao recuperar áudio:', err);
+      state.micAvailable = false;
+      state.muted = true;
+      publishMicrophoneState();
+      toast('Não foi possível recuperar o áudio. Clique no microfone para tentar novamente.', 'warn');
     }
   }
 
@@ -644,7 +737,7 @@
     }
     const on = !NoiseFilter.enabled;
     try {
-      await NoiseFilter.setEnabled(on);
+      await setLocalStream(await NoiseFilter.setEnabled(on));
     } catch (err) {
       console.warn('[anti-ruído]', err);
       toast('Não foi possível alterar a redução de ruído. O modo atual foi mantido.', 'warn');
@@ -652,7 +745,7 @@
     }
     localStorage.setItem('cinemaonline:anti-ruido', on ? 'on' : 'off');
     updateNoiseButton();
-    toast(on ? 'Redução de ruído ligada: só a sua voz é transmitida.' : 'Redução de ruído desligada.', on ? 'success' : 'info');
+    toast(on ? 'Redução de ruído ligada.' : 'Redução de ruído desligada.', on ? 'success' : 'info');
   }
 
   function updateNoiseButton() {
@@ -666,16 +759,40 @@
   }
 
   function callPeer(id) {
-    if (id === state.myId || state.calls.has(id)) return;
+    // Apenas um lado inicia a chamada, evitando duas negociações concorrentes.
+    if (id === state.myId || state.myId < id || state.calls.has(id) || !state.localStream || state.ended) return;
     const call = state.peer.call(id, state.localStream, { metadata: { room: state.roomCode } });
     if (call) setupCall(call);
   }
 
+  function maintainCalls() {
+    if (!state.peer || state.peer.disconnected || state.ended || !state.localStream) return;
+    for (const p of state.participants.values()) {
+      if (p.connected === false) continue;
+      const call = state.calls.get(p.id);
+      if (call && (!call.peerConnection || ['failed', 'closed', 'disconnected'].includes(call.peerConnection.connectionState))) restartCall(p.id);
+      callPeer(p.id);
+    }
+  }
+
+  function restartCall(id) {
+    closeCall(id);
+    if (state.ended || state.myId > id) return;
+    const msg = { t: 'voice-reconnect', from: state.myId, to: id };
+    if (state.isHost) {
+      const conn = state.conns.get(id);
+      if (conn && conn.open) conn.send(msg);
+    } else {
+      sendToHost(msg);
+    }
+  }
+
   function onIncomingCall(call) {
-    if (!call.metadata || call.metadata.room !== state.roomCode || state.ended) {
+    if (!call.metadata || call.metadata.room !== state.roomCode || state.ended || !state.localStream) {
       call.close();
       return;
     }
+    if (state.calls.has(call.peer)) closeCall(call.peer);
     call.answer(state.localStream);
     setupCall(call);
   }
@@ -684,12 +801,18 @@
     const old = state.calls.get(call.peer);
     if (old && old !== call) old.close();
     state.calls.set(call.peer, call);
-    call.on('stream', (stream) => attachAudio(call.peer, stream));
+    call.on('stream', (stream) => {
+      if (state.calls.get(call.peer) === call) attachAudio(call.peer, stream);
+    });
     call.on('close', () => {
-      if (state.calls.get(call.peer) === call) state.calls.delete(call.peer);
+      if (state.calls.get(call.peer) !== call) return;
+      state.calls.delete(call.peer);
       detachAudio(call.peer);
     });
-    call.on('error', () => detachAudio(call.peer));
+    call.on('error', (err) => {
+      console.warn('[voz]', err);
+      if (state.calls.get(call.peer) === call) closeCall(call.peer);
+    });
   }
 
   function closeCall(id) {
@@ -703,12 +826,16 @@
     detachAudio(id);
     const audio = new Audio();
     audio.autoplay = true;
+    audio.setAttribute('playsinline', '');
     audio.srcObject = stream;
     state.audioEls.set(id, audio);
     audio.play().catch(() => {
       toast('Clique em qualquer lugar da página para ativar o áudio.', 'warn', 5000);
       document.addEventListener('click', () => {
-        state.audioEls.forEach((a) => a.play().catch(() => {}));
+        state.audioEls.forEach((a) => a.play().catch((err) => {
+          console.warn('[voz] reprodução bloqueada:', err);
+          toast('O navegador bloqueou o áudio. Permita a reprodução de som nas configurações do site.', 'warn');
+        }));
       }, { once: true });
     });
     Speaking.add(id, stream);
@@ -727,50 +854,7 @@
       toast('O microfone ainda está sendo preparado. Aguarde um instante.', 'info');
       return;
     }
-    state.micRequestPending = true;
-    updateMicButton();
-    let stream;
-    const replaced = [];
-    try {
-      stream = await requestMicrophone();
-      if (state.ended) return;
-      const track = stream.getAudioTracks()[0];
-      track.enabled = false;
-      for (const call of state.calls.values()) {
-        for (const sender of call.peerConnection.getSenders()) {
-          if (sender.track && sender.track.kind === 'audio') {
-            const previous = sender.track;
-            await sender.replaceTrack(track);
-            replaced.push({ sender, previous });
-          }
-        }
-      }
-      if (state.ended) return;
-      const previousStream = state.localStream;
-      state.localStream = stream;
-      state.micAvailable = true;
-      Speaking.add(state.myId, stream);
-      setMuted(false);
-      previousStream.getTracks().forEach((track) => track.stop());
-    } catch (err) {
-      for (const { sender, previous } of replaced) {
-        try {
-          await sender.replaceTrack(previous);
-        } catch (restoreError) {
-          console.warn('[microfone] falha ao restaurar conexão:', restoreError);
-        }
-      }
-      if (state.ended) return;
-      console.warn('[microfone] falha ao ativar:', err);
-      const denied = err.name === 'NotAllowedError' || err.name === 'SecurityError';
-      toast(denied
-        ? 'O acesso ao microfone está bloqueado. Abra as permissões deste site no navegador (ícone ao lado do endereço), permita o microfone e tente ativá-lo novamente.'
-        : 'Não foi possível ativar o microfone. Verifique se ele está conectado e disponível e tente novamente.', 'warn', 8000);
-    } finally {
-      if (stream && (state.ended || state.localStream !== stream)) stream.getTracks().forEach((track) => track.stop());
-      state.micRequestPending = false;
-      updateMicButton();
-    }
+    await setupMic(NoiseFilter.prepare(), true);
   }
 
   function setMuted(muted) {
@@ -780,12 +864,8 @@
     }
     state.muted = muted;
     state.localStream.getAudioTracks().forEach((t) => { t.enabled = !muted; });
-    updateMicButton();
-    const me = state.participants.get(state.myId);
-    if (me) me.muted = muted;
-    renderParticipants();
-    if (state.isHost) broadcastParticipants();
-    else sendToHost({ t: 'mute', muted });
+    if (state.rawStream) state.rawStream.getAudioTracks().forEach((t) => { t.enabled = !muted; });
+    publishMicrophoneState();
     try {
       playMuteSound(muted);
     } catch (err) {
@@ -837,15 +917,22 @@
 
   function attachPeerHandlers(peer) {
     peer.on('call', onIncomingCall);
+    peer.on('open', () => {
+      if (state.ended) return;
+      if (!state.isHost) connectToHost();
+      maintainCalls();
+    });
     peer.on('disconnected', () => {
       if (state.ended || peer.destroyed) return;
-      setTimeout(() => { if (!state.ended && !peer.destroyed) peer.reconnect(); }, 1500);
+      if (!state.isHost && state.joined) notifyReconnecting();
     });
     peer.on('error', (err) => {
       if (state.ended) return;
       if (err.type === 'peer-unavailable') {
         if (!state.isHost && !state.joined) {
-          endSession('Sala não encontrada. O link pode ter expirado ou o anfitrião já saiu.', 'Não foi possível entrar');
+          endSession('Sala não encontrada. Confira o link e se o anfitrião está com a sala aberta.', 'Não foi possível entrar');
+        } else if (!state.isHost) {
+          notifyReconnecting();
         }
         return;
       }
@@ -855,6 +942,10 @@
       }
       console.warn('[peer]', err.type, err);
     });
+  }
+
+  function recoverSignaling() {
+    if (state.peer && state.peer.disconnected && !state.peer.destroyed && !state.ended) state.peer.reconnect();
   }
 
   function participantList() {
@@ -922,41 +1013,67 @@
 
   function onGuestConnection(conn) {
     conn.on('data', (msg) => handleGuestMessage(conn, msg));
-    conn.on('close', () => removeParticipant(conn.peer));
-    conn.on('error', () => removeParticipant(conn.peer));
+    conn.on('close', () => disconnectParticipant(conn));
+    conn.on('error', (err) => {
+      console.warn('[sala] conexão do convidado:', err);
+      disconnectParticipant(conn);
+    });
+  }
+
+  function disconnectParticipant(conn) {
+    if (state.ended || state.conns.get(conn.peer) !== conn) return;
+    state.conns.delete(conn.peer);
+    const p = state.participants.get(conn.peer);
+    if (p) p.connected = false;
+    closeCall(conn.peer);
+    renderParticipants();
+    broadcastParticipants();
   }
 
   function handleGuestMessage(conn, msg) {
-    if (!msg || typeof msg !== 'object') return;
+    if (!msg || typeof msg !== 'object' || state.ended) return;
     const id = conn.peer;
-    state.lastSeen.set(id, Date.now());
     const p = state.participants.get(id);
 
     if (msg.t === 'hello') {
-      if (p) return;
-      if (state.participants.size >= MAX_PARTICIPANTS) {
+      if (!p && state.participants.size >= MAX_PARTICIPANTS) {
         conn.send({ t: 'full' });
         setTimeout(() => conn.close(), 800);
         return;
       }
       const name = cleanName(msg.name) || 'Convidado';
+      const old = state.conns.get(id);
       state.conns.set(id, conn);
-      state.participants.set(id, { id, name, muted: !!msg.muted, isHost: false });
-      broadcastParticipants();
+      if (old && old !== conn) old.close();
+      state.participants.set(id, { id, name, muted: !!msg.muted, isHost: false, connected: true });
       conn.send({
         t: 'welcome',
         participants: participantList(),
         chat: state.chat.slice(-100),
         video: currentVideoState(),
       });
+      broadcastParticipants();
       renderParticipants();
-      systemMessage(`${name} entrou na sala`);
+      maintainCalls();
+      if (!p) systemMessage(`${name} entrou na sala`);
       return;
     }
 
-    if (!p) return; // ignora quem não foi aceito na sala
+    if (!p || state.conns.get(id) !== conn) return;
 
     switch (msg.t) {
+      case 'voice-reconnect':
+        if (msg.to === state.myId) {
+          closeCall(id);
+          maintainCalls();
+        } else {
+          const target = state.conns.get(msg.to);
+          if (target && target.open) target.send({ t: 'voice-reconnect', from: id, to: msg.to });
+        }
+        break;
+      case 'ping':
+        conn.send({ t: 'sync', url: state.video.url, video: currentVideoState() });
+        break;
       case 'chat': {
         const text = String(msg.text || '').trim().slice(0, 500);
         if (!text) return;
@@ -1000,7 +1117,6 @@
     const p = state.participants.get(id);
     const conn = state.conns.get(id);
     state.conns.delete(id);
-    state.lastSeen.delete(id);
     closeCall(id);
     if (conn && conn.open) conn.close();
     if (!p || p.isHost) return;
@@ -1016,10 +1132,9 @@
   }
 
   function hostHeartbeat() {
-    const now = Date.now();
-    for (const [id, seen] of state.lastSeen) {
-      if (now - seen > TIMEOUT_MS) removeParticipant(id);
-    }
+    if (state.ended) return;
+    recoverSignaling();
+    maintainCalls();
     const v = currentVideoState();
     broadcast({ t: 'sync', url: state.video.url, video: v && Player.ready() ? { time: v.time, playing: v.playing } : null });
   }
@@ -1035,7 +1150,8 @@
     state.isHost = false;
     state.myName = name;
     state.roomCode = code;
-    const filterReadyPromise = NoiseFilter.prepare();
+    state.localStream = Speaking.audioCtx().createMediaStreamDestination().stream;
+    state.filterReadyPromise = NoiseFilter.prepare();
     showLoading('Entrando na sala…');
 
     let peer;
@@ -1049,21 +1165,46 @@
     state.myId = peer.id;
     attachPeerHandlers(peer);
 
-    const conn = peer.connect(PEER_PREFIX + code, { reliable: true, serialization: 'json' });
+    state.timers.push(setInterval(guestHeartbeat, HEARTBEAT_MS));
+    connectToHost();
+  }
+
+  function notifyReconnecting() {
+    if (state.reconnecting || state.ended) return;
+    state.reconnecting = true;
+    toast('Conexão interrompida. Reconectando à sala sem fechar o vídeo…', 'warn', 6000);
+  }
+
+  function connectToHost() {
+    if (!state.peer || state.peer.disconnected || state.peer.destroyed || state.ended) return;
+    if (state.hostConn && state.hostConn.open) return;
+    if (state.hostConn && Date.now() - state.hostRetryAt < TIMEOUT_MS) return;
+    const previous = state.hostConn;
+    state.hostConn = null;
+    if (previous) previous.close();
+    const conn = state.peer.connect(PEER_PREFIX + state.roomCode, { reliable: true, serialization: 'json' });
     state.hostConn = conn;
+    state.hostRetryAt = Date.now();
 
-    const failTimer = setTimeout(() => {
-      if (!state.joined) endSession('A sala não respondeu. Confira o link ou peça um novo convite.', 'Não foi possível entrar');
-    }, TIMEOUT_MS);
-
-    conn.on('open', () => conn.send({ t: 'hello', name, muted: state.muted }));
+    conn.on('open', () => {
+      if (state.hostConn === conn && !state.ended) conn.send({ t: 'hello', name: state.myName, muted: state.muted });
+    });
     conn.on('data', (msg) => {
+      if (state.hostConn !== conn || state.ended) return;
       state.lastHostMsg = Date.now();
-      if (msg && msg.t === 'welcome') clearTimeout(failTimer);
-      handleHostMessage(msg, filterReadyPromise);
+      handleHostMessage(msg, state.filterReadyPromise);
     });
     conn.on('close', () => {
-      if (state.joined) endSession('O anfitrião encerrou a sala ou perdeu a conexão.');
+      if (state.hostConn !== conn || state.ended) return;
+      state.hostConn = null;
+      if (state.joined) notifyReconnecting();
+    });
+    conn.on('error', (err) => {
+      if (state.hostConn !== conn || state.ended) return;
+      console.warn('[sala] conexão com anfitrião:', err);
+      state.hostConn = null;
+      conn.close();
+      if (state.joined) notifyReconnecting();
     });
   }
 
@@ -1075,23 +1216,33 @@
         break;
 
       case 'welcome': {
+        const wasJoined = state.joined;
         state.joined = true;
+        state.reconnecting = false;
         state.participants = new Map(msg.participants.map((p) => [p.id, p]));
         enterRoom();
-        (msg.chat || []).forEach(addChatMessage);
-        addSystemMessage('Você entrou na sala');
+        if (!wasJoined) {
+          (msg.chat || []).forEach(addChatMessage);
+          addSystemMessage('Você entrou na sala');
+        } else {
+          toast('Conexão com a sala recuperada.', 'success');
+        }
         const v = msg.video;
         if (v && v.url) {
           const src = Player.parse(v.url);
           if (src) {
-            state.video.url = src.url;
-            $('#video-url').value = src.url;
-            Player.load(src, { time: v.time + (v.playing ? 1 : 0), playing: v.playing });
+            if (wasJoined && state.video.url === src.url) {
+              Player.apply(v.playing ? 'play' : 'pause', v.time);
+            } else {
+              state.video.url = src.url;
+              $('#video-url').value = src.url;
+              Player.load(src, { time: v.time + (v.playing ? 1 : 0), playing: v.playing });
+            }
             setActivity('Sincronizado com a sala');
           }
         }
-        state.timers.push(setInterval(guestHeartbeat, HEARTBEAT_MS));
-        setupGuestAudio(filterReadyPromise);
+        maintainCalls();
+        if (!wasJoined) setupGuestAudio(filterReadyPromise);
         break;
       }
 
@@ -1100,8 +1251,16 @@
         for (const id of state.participants.keys()) if (!ids.has(id)) closeCall(id);
         state.participants = new Map(msg.list.map((p) => [p.id, p]));
         renderParticipants();
+        maintainCalls();
         break;
       }
+
+      case 'voice-reconnect':
+        if (msg.to === state.myId && state.participants.has(msg.from)) {
+          closeCall(msg.from);
+          maintainCalls();
+        }
+        break;
 
       case 'chat':
         addChatMessage(msg);
@@ -1176,10 +1335,17 @@
   }
 
   function guestHeartbeat() {
-    sendToHost({ t: 'ping' });
-    if (Date.now() - state.lastHostMsg > TIMEOUT_MS) {
-      endSession('A conexão com a sala foi perdida.');
+    if (state.ended) return;
+    recoverSignaling();
+    if (state.hostConn && state.hostConn.peerConnection && ['failed', 'closed', 'disconnected'].includes(state.hostConn.peerConnection.connectionState)) {
+      const conn = state.hostConn;
+      state.hostConn = null;
+      conn.close();
+      if (state.joined) notifyReconnecting();
     }
+    connectToHost();
+    sendToHost({ t: 'ping' });
+    maintainCalls();
   }
 
   /* ================= Vídeo compartilhado ================= */
@@ -1308,6 +1474,7 @@
       if (p.id === state.myId) name.appendChild(el('small', null, '(você)'));
       li.append(avatar, name);
       if (p.isHost) li.appendChild(el('span', 'badge', 'Anfitrião'));
+      if (p.connected === false) li.appendChild(el('span', 'badge', 'Reconectando'));
       const mic = el('span', 'p-mic' + (p.muted ? ' off' : ''));
       mic.innerHTML = p.muted ? MIC_OFF_ICON : MIC_ICON;
       mic.title = p.muted ? 'Microfone desligado' : 'Microfone ligado';
@@ -1384,6 +1551,7 @@
     if (state.hostConn) state.hostConn.close();
     if (state.peer && !state.peer.destroyed) state.peer.destroy();
     if (state.localStream) state.localStream.getTracks().forEach((t) => t.stop());
+    if (state.rawStream) state.rawStream.getTracks().forEach((t) => t.stop());
     NoiseFilter.destroy();
     Player.reset();
     Speaking.stop();
@@ -1502,7 +1670,19 @@
       }
     });
 
-    window.addEventListener('pagehide', () => {
+    const resumeConnections = () => {
+      if (state.ended || !state.peer) return;
+      if (state.isHost) hostHeartbeat();
+      else guestHeartbeat();
+    };
+    window.addEventListener('online', resumeConnections);
+    window.addEventListener('pageshow', resumeConnections);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) resumeConnections();
+    });
+
+    window.addEventListener('pagehide', (e) => {
+      if (e.persisted) return;
       if (!state.joined || state.ended) return;
       if (state.isHost) broadcast({ t: 'end' });
       else sendToHost({ t: 'bye' });
