@@ -492,27 +492,36 @@
     let source = null;
     let chainIn = null;
     let dest = null;
+    let activeRoute = null;
     let nodes = [];
     let rawStream = null;
     let available = false;
     let enabled = true;
+    let preparation = null;
 
     async function prepare() {
-      try {
-        if (!window.AudioWorkletNode || !window.WebAssembly) return false;
-        ctx = new AudioContext({ sampleRate: 48000 });
-        const wasmFile = WebAssembly.validate(SIMD_PROBE) ? 'rnnoise_simd.wasm' : 'rnnoise.wasm';
-        [wasm] = await Promise.all([
-          fetch(PATH + wasmFile).then((r) => { if (!r.ok) throw new Error('wasm ' + r.status); return r.arrayBuffer(); }),
-          ctx.audioWorklet.addModule(PATH + 'rnnoiseWorklet.js'),
-          ctx.audioWorklet.addModule('audio/voiceGateWorklet.js'),
-        ]);
-        return true;
-      } catch (err) {
-        console.warn('[anti-ruído] indisponível:', err);
-        destroy();
-        return false;
-      }
+      if (preparation) return preparation;
+      preparation = (async () => {
+        try {
+          if (!window.AudioWorkletNode || !window.WebAssembly) return false;
+          ctx = new AudioContext({ sampleRate: 48000 });
+          const resume = ctx.resume();
+          const wasmFile = WebAssembly.validate(SIMD_PROBE) ? 'rnnoise_simd.wasm' : 'rnnoise.wasm';
+          [wasm] = await Promise.all([
+            fetch(PATH + wasmFile).then((r) => { if (!r.ok) throw new Error('wasm ' + r.status); return r.arrayBuffer(); }),
+            ctx.audioWorklet.addModule(PATH + 'rnnoiseWorklet.js'),
+            ctx.audioWorklet.addModule('audio/voiceGateWorklet.js'),
+            resume,
+          ]);
+          if (ctx.state !== 'running') throw new Error('AudioContext não iniciou');
+          return true;
+        } catch (err) {
+          console.warn('[anti-ruído] indisponível:', err);
+          destroy();
+          return false;
+        }
+      })();
+      return preparation;
     }
 
     function build(raw, startEnabled) {
@@ -534,7 +543,7 @@
         chainIn = highpass;
         nodes = [highpass, rnnoise, gate];
         route();
-        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        if (ctx.state !== 'running') throw new Error('AudioContext suspenso');
         available = true;
         return dest.stream;
       } catch (err) {
@@ -546,14 +555,17 @@
     }
 
     function route() {
-      source.disconnect();
-      source.connect(enabled ? chainIn : dest);
-      // Com o filtro desligado, volta a usar a supressão básica do navegador.
-      const track = rawStream && rawStream.getAudioTracks()[0];
-      if (track && track.applyConstraints) track.applyConstraints({ noiseSuppression: !enabled }).catch(() => {});
+      const next = enabled ? chainIn : dest;
+      if (next === activeRoute) return;
+      source.connect(next);
+      if (activeRoute) source.disconnect(activeRoute);
+      activeRoute = next;
     }
 
-    function setEnabled(on) {
+    async function setEnabled(on) {
+      if (!available || !ctx) throw new Error('Redução de ruído indisponível');
+      if (ctx.state !== 'running') await ctx.resume();
+      if (ctx.state !== 'running') throw new Error('AudioContext suspenso');
       enabled = on;
       if (available) route();
     }
@@ -567,7 +579,13 @@
       rawStream = null;
       if (ctx) ctx.close().catch(() => {});
       ctx = null;
+      source = null;
+      chainIn = null;
+      dest = null;
+      activeRoute = null;
+      wasm = null;
       available = false;
+      preparation = null;
     }
 
     return {
@@ -579,10 +597,11 @@
 
   /* ================= Microfone e voz ================= */
 
-  async function setupMic() {
+  async function setupMic(filterReadyPromise = NoiseFilter.prepare()) {
     Speaking.audioCtx();
     const wantFilter = localStorage.getItem('cinemaonline:anti-ruido') === 'on';
-    const filterReady = await NoiseFilter.prepare();
+    const filterReady = await filterReadyPromise;
+    if (state.ended) return;
     try {
       const raw = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -593,9 +612,14 @@
         },
         video: false,
       });
+      if (state.ended) {
+        raw.getTracks().forEach((track) => track.stop());
+        return;
+      }
       state.localStream = filterReady ? NoiseFilter.build(raw, wantFilter) : raw;
       state.micAvailable = true;
     } catch {
+      if (state.ended) return;
       // Stream silencioso: permite participar ouvindo os outros mesmo sem microfone.
       NoiseFilter.destroy();
       state.localStream = Speaking.audioCtx().createMediaStreamDestination().stream;
@@ -605,7 +629,7 @@
     }
   }
 
-  function toggleNoiseFilter() {
+  async function toggleNoiseFilter() {
     if (!NoiseFilter.available) {
       toast(state.micAvailable
         ? 'A redução de ruído com IA não é suportada neste navegador. Usando o filtro básico.'
@@ -613,7 +637,13 @@
       return;
     }
     const on = !NoiseFilter.enabled;
-    NoiseFilter.setEnabled(on);
+    try {
+      await NoiseFilter.setEnabled(on);
+    } catch (err) {
+      console.warn('[anti-ruído]', err);
+      toast('Não foi possível alterar a redução de ruído. O modo atual foi mantido.', 'warn');
+      return;
+    }
     localStorage.setItem('cinemaonline:anti-ruido', on ? 'on' : 'off');
     updateNoiseButton();
     toast(on ? 'Redução de ruído ligada: só a sua voz é transmitida.' : 'Redução de ruído desligada.', on ? 'success' : 'info');
@@ -943,6 +973,7 @@
     state.isHost = false;
     state.myName = name;
     state.roomCode = code;
+    const filterReadyPromise = NoiseFilter.prepare();
     showLoading('Entrando na sala…');
 
     let peer;
@@ -998,7 +1029,7 @@
           }
         }
         state.timers.push(setInterval(guestHeartbeat, HEARTBEAT_MS));
-        setupGuestAudio();
+        setupGuestAudio(filterReadyPromise);
         break;
       }
 
@@ -1032,8 +1063,8 @@
     }
   }
 
-  function setupGuestAudio() {
-    setupMic().then(() => {
+  function setupGuestAudio(filterReadyPromise) {
+    setupMic(filterReadyPromise).then(() => {
       if (state.ended) {
         if (state.localStream) state.localStream.getTracks().forEach((track) => track.stop());
         state.localStream = null;

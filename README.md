@@ -15,6 +15,7 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
   - Filtro passa-alta: corta graves como batidas na mesa e pancadas
   - [RNNoise](https://github.com/xiph/rnnoise) (rede neural): remove chiado, ventilador e teclado, e silencia trechos em que não detecta voz
   - Gate de voz ([audio/voiceGateWorklet.js](audio/voiceGateWorklet.js)): só abre com som sustentado na faixa da fala, se adapta ao ruído de fundo do ambiente e não corta o início das palavras (atraso extra de ~100 ms)
+  - Alternar o filtro não reinicia a captura do microfone
   - Se o navegador não suportar, usa a supressão de ruído padrão do navegador
 - Chat da sessão: fica só na memória e some quando a sala é encerrada
 
