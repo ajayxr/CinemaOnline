@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Crie uma sala, convide até 3 amigos e assistam vídeos juntos, com voz e chat em tempo real.">
+  <meta name="theme-color" content="#0b0b10">
+  <title>CinemaOnline — Assista junto</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23e5484d'/%3E%3Cpath d='M26 20l20 12-20 12z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="file-warning" class="banner" hidden>
+    Você abriu o arquivo direto do disco. Para o YouTube, o microfone e os convites funcionarem, publique o site ou rode um servidor local (veja o README).
+  </div>
+  <div id="embedded-warning" class="banner" hidden>
+    Você está no navegador embutido do editor, que não reproduz vídeos do YouTube. Abra este endereço no Chrome, Edge ou Firefox.
+  </div>
+
+  <!-- ============ HOME ============ -->
+  <main id="view-home" class="view home">
+    <header class="home-header">
+      <a class="brand" href="./">
+        <span class="brand-logo"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></span>
+        <span>Cinema<strong>Online</strong></span>
+      </a>
+      <span class="tag">Sem cadastro · Sem banco de dados</span>
+    </header>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="eyebrow"><span class="pulse"></span>Salas privadas para até 4 pessoas</span>
+        <h1>Assista junto,<br><span class="grad">de onde estiver.</span></h1>
+        <p class="lead">Cole a URL de um vídeo, convide seus amigos pelo link e assistam em sincronia, conversando por voz e pelo chat.</p>
+
+        <ul class="features">
+          <li>
+            <span class="feat-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M10 9.5v5l4-2.5z"/></svg></span>
+            <div><strong>Vídeo sincronizado</strong><span>Play, pausa e avanço para todos ao mesmo tempo.</span></div>
+          </li>
+          <li>
+            <span class="feat-icon"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+            <div><strong>Voz em tempo real</strong><span>Conversa direta entre os navegadores (P2P).</span></div>
+          </li>
+          <li>
+            <span class="feat-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span>
+            <div><strong>Chat da sessão</strong><span>Nada é salvo: some quando a sala acaba.</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="card start-card">
+        <h2>Comece agora</h2>
+        <p class="muted">Crie uma sala e compartilhe o link.</p>
+        <form id="form-create" class="stack">
+          <label class="field">
+            <span>Seu nome</span>
+            <input id="home-name" maxlength="24" placeholder="Como seus amigos vão te ver" autocomplete="nickname">
+          </label>
+          <button class="btn btn-primary btn-lg" type="submit">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            Criar sala
+          </button>
+        </form>
+        <div class="divider"><span>ou entre com um convite</span></div>
+        <form id="form-join-code" class="inline-form">
+          <input id="home-code" placeholder="Cole o link ou o código da sala" autocomplete="off">
+          <button class="btn btn-ghost" type="submit">Entrar</button>
+        </form>
+        <p class="hint">O navegador pedirá acesso ao microfone. A redução de ruído com IA já vem ligada para transmitir só a sua voz.</p>
+      </div>
+    </section>
+
+    <footer class="home-footer">
+      As salas existem apenas enquanto o anfitrião estiver com a página aberta. Vídeo, voz e chat trafegam direto entre os participantes.
+    </footer>
+  </main>
+
+  <!-- ============ SALA ============ -->
+  <div id="view-room" class="view room" hidden>
+    <header class="topbar">
+      <a class="brand small" href="./" title="CinemaOnline">
+        <span class="brand-logo"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></span>
+        <span class="brand-text">Cinema<strong>Online</strong></span>
+      </a>
+      <div class="room-info">
+        <span class="room-label">Sala</span>
+        <code id="room-code">------</code>
+        <span id="room-count" class="pill">1/4</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-invite" class="btn btn-ghost" type="button" title="Copiar link de convite">
+          <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span class="hide-sm">Convidar</span>
+        </button>
+        <button id="btn-nr" class="btn btn-ghost btn-nr" type="button" title="Redução de ruído com IA" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 4v16M15 8v8M19 11v2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <span class="hide-sm">Anti-ruído</span>
+        </button>
+        <button id="btn-mic" class="btn btn-icon" type="button" title="Silenciar microfone (M)" aria-pressed="false">
+          <svg class="icon-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg class="icon-mic-off" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        </button>
+        <button id="btn-leave" class="btn btn-danger" type="button">
+          <svg viewBox="0 0 24 24"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="hide-sm">Sair</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="room-body">
+      <section class="stage">
+        <form id="form-url" class="url-bar">
+          <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input id="video-url" type="text" inputmode="url" placeholder="Cole a URL do vídeo (YouTube, .mp4, .webm, .m3u8)" autocomplete="off">
+          <button class="btn btn-primary" type="submit">Carregar</button>
+        </form>
+
+        <div class="player" id="player">
+          <div id="yt-host" class="player-layer" hidden></div>
+          <video id="html-player" class="player-layer" controls playsinline hidden></video>
+          <div id="player-empty" class="player-empty">
+            <div class="empty-icon"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></div>
+            <h3>Nenhum vídeo carregado</h3>
+            <p>Cole uma URL acima para começar. Todos na sala assistirão juntos.</p>
+            <div class="invite-box">
+              <input id="invite-link" readonly aria-label="Link de convite">
+              <button id="btn-copy-invite" class="btn btn-ghost" type="button">Copiar link</button>
+            </div>
+          </div>
+          <button id="player-unlock" class="player-unlock" type="button" hidden>
+            <span class="empty-icon"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></span>
+            Clique para sincronizar a reprodução
+          </button>
+        </div>
+
+        <div id="controls" class="controls disabled">
+          <button id="ctl-back" class="ctl" type="button" title="Voltar 30 segundos (←)">
+            <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.34-5.66M4 4v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>30s</span>
+          </button>
+          <button id="ctl-play" class="ctl ctl-main" type="button" title="Reproduzir / pausar (Espaço)">
+            <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg>
+            <svg class="icon-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+          </button>
+          <button id="ctl-fwd" class="ctl" type="button" title="Avançar 30 segundos (→)">
+            <span>30s</span>
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span id="ctl-time" class="ctl-time">00:00 / 00:00</span>
+          <input id="ctl-seek" class="ctl-seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Posição do vídeo">
+        </div>
+
+        <div class="activity">
+          <span class="dot"></span>
+          <span id="activity-text">Aguardando um vídeo</span>
+          <span class="activity-hint">Os controles valem para todos na sala</span>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="card panel">
+          <div class="panel-head">
+            <h3>Participantes</h3>
+            <span id="participants-count" class="muted">1 de 4</span>
+          </div>
+          <ul id="participants" class="participants"></ul>
+        </div>
+
+        <div class="card panel chat">
+          <div class="panel-head">
+            <h3>Chat da sessão</h3>
+            <span class="muted">Não é salvo</span>
+          </div>
+          <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+          <form id="form-chat" class="chat-form">
+            <input id="chat-input" maxlength="500" placeholder="Escreva uma mensagem…" autocomplete="off">
+            <button class="btn btn-primary btn-icon" type="submit" aria-label="Enviar">
+              <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            </button>
+          </form>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ============ MODAIS ============ -->
+  <div id="modal-join" class="modal" hidden>
+    <form id="form-join" class="card modal-card">
+      <span class="modal-icon"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></span>
+      <h2>Você foi convidado!</h2>
+      <p class="muted">Sala <code id="join-code"></code> · máximo de 4 participantes</p>
+      <label class="field">
+        <span>Seu nome</span>
+        <input id="join-name" maxlength="24" placeholder="Como seus amigos vão te ver" autocomplete="nickname">
+      </label>
+      <button class="btn btn-primary btn-lg" type="submit">Entrar na sala</button>
+      <a class="link-muted" href="./">Criar minha própria sala</a>
+    </form>
+  </div>
+
+  <div id="modal-end" class="modal" hidden>
+    <div class="card modal-card">
+      <span class="modal-icon warn"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg></span>
+      <h2 id="end-title">Sessão encerrada</h2>
+      <p id="end-reason" class="muted"></p>
+      <button id="btn-home" class="btn btn-primary btn-lg" type="button">Voltar ao início</button>
+    </div>
+  </div>
+
+  <div id="loading" class="modal loading" hidden>
+    <div class="spinner"></div>
+    <p id="loading-text">Conectando…</p>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" charset="utf-8"></script>
+  <script src="app.js" charset="utf-8"></script>
+</body>
+</html>
