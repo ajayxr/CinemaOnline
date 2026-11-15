@@ -919,7 +919,6 @@
     state.myName = name;
     state.roomCode = code;
     showLoading('Entrando na sala…');
-    await setupMic();
 
     let peer;
     try {
@@ -973,8 +972,8 @@
             setActivity('Sincronizado com a sala');
           }
         }
-        for (const p of state.participants.values()) callPeer(p.id);
         state.timers.push(setInterval(guestHeartbeat, HEARTBEAT_MS));
+        setupGuestAudio();
         break;
       }
 
@@ -1006,6 +1005,30 @@
         endSession('O anfitrião encerrou a sala.');
         break;
     }
+  }
+
+  function setupGuestAudio() {
+    setupMic().then(() => {
+      if (state.ended) {
+        if (state.localStream) state.localStream.getTracks().forEach((track) => track.stop());
+        state.localStream = null;
+        NoiseFilter.destroy();
+        return;
+      }
+
+      updateMicButton();
+      updateNoiseButton();
+      const me = state.participants.get(state.myId);
+      if (me) me.muted = state.muted;
+      renderParticipants();
+      if (state.localStream && state.micAvailable) Speaking.add(state.myId, state.localStream);
+      for (const p of state.participants.values()) callPeer(p.id);
+      if (!state.micAvailable) sendToHost({ t: 'mute', muted: true });
+    }).catch((err) => {
+      if (state.ended) return;
+      console.error('[microfone]', err);
+      toast('Não foi possível preparar o áudio. Tente recarregar a página.', 'error');
+    });
   }
 
   function handleSync(msg) {

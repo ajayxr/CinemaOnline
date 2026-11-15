@@ -22,6 +22,7 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
 
 - A conexão é ponto a ponto (WebRTC) usando [PeerJS](https://peerjs.com/). O servidor público do PeerJS serve só para os navegadores se encontrarem.
 - Quem cria a sala é o **anfitrião**. Ele controla o limite de vagas, repassa o chat e os comandos do vídeo e envia o estado atual para quem entra depois.
+- A entrada e a lista de participantes não esperam a configuração do microfone; a conexão de voz começa assim que o áudio estiver pronto.
 - A sala existe enquanto a página do anfitrião estiver aberta. Se o anfitrião sair, a sala é encerrada para todos.
 
 ## Executar
