@@ -581,7 +581,7 @@
 
   async function setupMic() {
     Speaking.audioCtx();
-    const wantFilter = localStorage.getItem('cinemaonline:anti-ruido') !== 'off';
+    const wantFilter = localStorage.getItem('cinemaonline:anti-ruido') === 'on';
     const filterReady = await NoiseFilter.prepare();
     try {
       const raw = await navigator.mediaDevices.getUserMedia({
