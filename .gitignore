@@ -1,0 +1,4 @@
+# This repository is at the Windows home directory, not the site project.
+# Keep home-directory files and folders out of this repository.
+/*
+!/.gitignore
