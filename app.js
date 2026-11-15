@@ -37,7 +37,8 @@
     video: { url: null },
     localStream: null,
     micAvailable: false,
-    muted: false,
+    micRequestPending: false,
+    muted: true,
     mismatch: 0,
     timers: [],
   };
@@ -597,27 +598,32 @@
 
   /* ================= Microfone e voz ================= */
 
+  function requestMicrophone(noiseSuppression = true) {
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+      video: false,
+    });
+  }
+
   async function setupMic(filterReadyPromise = NoiseFilter.prepare()) {
     Speaking.audioCtx();
     const wantFilter = localStorage.getItem('cinemaonline:anti-ruido') === 'on';
     const filterReady = await filterReadyPromise;
     if (state.ended) return;
     try {
-      const raw = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: !(filterReady && wantFilter),
-          autoGainControl: true,
-          channelCount: 1,
-        },
-        video: false,
-      });
+      const raw = await requestMicrophone(!(filterReady && wantFilter));
       if (state.ended) {
         raw.getTracks().forEach((track) => track.stop());
         return;
       }
       state.localStream = filterReady ? NoiseFilter.build(raw, wantFilter) : raw;
       state.micAvailable = true;
+      state.muted = false;
     } catch {
       if (state.ended) return;
       // Stream silencioso: permite participar ouvindo os outros mesmo sem microfone.
@@ -715,9 +721,61 @@
     Speaking.remove(id);
   }
 
+  async function enableMicrophone() {
+    if (state.micRequestPending || state.ended) return;
+    if (!state.localStream) {
+      toast('O microfone ainda está sendo preparado. Aguarde um instante.', 'info');
+      return;
+    }
+    state.micRequestPending = true;
+    updateMicButton();
+    let stream;
+    const replaced = [];
+    try {
+      stream = await requestMicrophone();
+      if (state.ended) return;
+      const track = stream.getAudioTracks()[0];
+      track.enabled = false;
+      for (const call of state.calls.values()) {
+        for (const sender of call.peerConnection.getSenders()) {
+          if (sender.track && sender.track.kind === 'audio') {
+            const previous = sender.track;
+            await sender.replaceTrack(track);
+            replaced.push({ sender, previous });
+          }
+        }
+      }
+      if (state.ended) return;
+      const previousStream = state.localStream;
+      state.localStream = stream;
+      state.micAvailable = true;
+      Speaking.add(state.myId, stream);
+      setMuted(false);
+      previousStream.getTracks().forEach((track) => track.stop());
+    } catch (err) {
+      for (const { sender, previous } of replaced) {
+        try {
+          await sender.replaceTrack(previous);
+        } catch (restoreError) {
+          console.warn('[microfone] falha ao restaurar conexão:', restoreError);
+        }
+      }
+      if (state.ended) return;
+      console.warn('[microfone] falha ao ativar:', err);
+      const denied = err.name === 'NotAllowedError' || err.name === 'SecurityError';
+      toast(denied
+        ? 'O acesso ao microfone está bloqueado. Abra as permissões deste site no navegador (ícone ao lado do endereço), permita o microfone e tente ativá-lo novamente.'
+        : 'Não foi possível ativar o microfone. Verifique se ele está conectado e disponível e tente novamente.', 'warn', 8000);
+    } finally {
+      if (stream && (state.ended || state.localStream !== stream)) stream.getTracks().forEach((track) => track.stop());
+      state.micRequestPending = false;
+      updateMicButton();
+    }
+  }
+
   function setMuted(muted) {
     if (!state.micAvailable) {
-      toast('Microfone indisponível. Verifique as permissões do navegador.', 'warn');
+      if (!muted) enableMicrophone();
       return;
     }
     state.muted = muted;
@@ -757,9 +815,13 @@
 
   function updateMicButton() {
     const btn = $('#btn-mic');
-    btn.classList.toggle('off', state.muted);
-    btn.setAttribute('aria-pressed', String(state.muted));
-    btn.title = state.muted ? 'Ativar microfone (M)' : 'Silenciar microfone (M)';
+    const off = !state.micAvailable || state.muted;
+    btn.classList.toggle('off', off);
+    btn.setAttribute('aria-pressed', String(off));
+    btn.disabled = state.micRequestPending;
+    btn.title = !state.micAvailable
+      ? 'Ativar microfone e solicitar permissão no navegador (M)'
+      : off ? 'Ativar microfone (M)' : 'Silenciar microfone (M)';
   }
 
   /* ================= PeerJS ================= */
@@ -998,14 +1060,14 @@
     conn.on('data', (msg) => {
       state.lastHostMsg = Date.now();
       if (msg && msg.t === 'welcome') clearTimeout(failTimer);
-      handleHostMessage(msg);
+      handleHostMessage(msg, filterReadyPromise);
     });
     conn.on('close', () => {
       if (state.joined) endSession('O anfitrião encerrou a sala ou perdeu a conexão.');
     });
   }
 
-  function handleHostMessage(msg) {
+  function handleHostMessage(msg, filterReadyPromise) {
     if (!msg || typeof msg !== 'object' || state.ended) return;
     switch (msg.t) {
       case 'full':
@@ -1079,7 +1141,7 @@
       renderParticipants();
       if (state.localStream && state.micAvailable) Speaking.add(state.myId, state.localStream);
       for (const p of state.participants.values()) callPeer(p.id);
-      if (!state.micAvailable) sendToHost({ t: 'mute', muted: true });
+      sendToHost({ t: 'mute', muted: state.muted });
     }).catch((err) => {
       if (state.ended) return;
       console.error('[microfone]', err);
