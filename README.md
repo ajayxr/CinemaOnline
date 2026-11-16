@@ -1,6 +1,6 @@
 # CinemaOnline
 
-Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real. Feito só com HTML, CSS e JavaScript: não tem backend, banco de dados nem login.
+Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real. O aplicativo usa HTML, CSS e JavaScript; um servidor estático Node.js sem dependências cuida apenas dos arquivos e cabeçalhos HTTP. Não há backend para as salas, banco de dados nem login.
 
 ## Recursos
 
@@ -23,6 +23,7 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
   - Se o filtro falhar ou seu contexto de áudio for suspenso, o envio volta automaticamente à captura direta, com um aviso
 - Chat da sessão: fica só na memória e some quando a sala é encerrada
   - Seletor com 36 emojis, organizados em reações, cinema e boas vibrações; insere na posição do cursor
+  - No celular, controles com área de toque de pelo menos 44 px e grades que se ajustam à tela, sem nomes de participantes expandirem a página
   - Mensagens de voz: clique em **Gravar áudio**, depois em **Parar gravação**; ouça a prévia e escolha **Enviar áudio** ou **Cancelar**
   - A gravação usa uma captura separada: funciona mesmo com a chamada no mudo, sem desmutar sua voz ao vivo
   - Até 60 segundos e 1 MB por áudio; sem reprodução automática. Os áudios são enviados aos participantes e entram no histórico temporário para quem chega depois
@@ -42,15 +43,25 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
 O site precisa estar em `http://localhost` ou `https://` para o microfone e o YouTube funcionarem:
 
 ```bash
-# na pasta do projeto
-python -m http.server 8080
-# ou
-npx serve .
+# Node.js 22 ou mais recente, na pasta do projeto
+npm start
 ```
 
 Abra `http://localhost:8080`.
 
 Para convidar amigos de outras redes, publique a pasta em qualquer hospedagem estática com HTTPS, como GitHub Pages, Netlify, Vercel ou Cloudflare Pages.
+
+### Railway: um único serviço
+
+- Publique estas alterações no **serviço atual**, mantendo o mesmo repositório e domínio. Não crie outro serviço.
+- O `Dockerfile` faz o Railway usar Node.js e executar `node server.cjs`, sem instalar dependências. Se houver um comando de inicialização personalizado no painel, remova-o ou ajuste-o para `npm start`.
+- O servidor escuta em `0.0.0.0` na variável `PORT` fornecida pelo Railway; localmente, usa a porta 8080. O caminho `/` pode ser usado como healthcheck.
+- O servidor só entrega arquivos estáticos. Chat, voz e sincronização continuam P2P; não há banco, autenticação, armazenamento de mensagens ou serviços novos.
+- A política HTTP permite áudio `blob:` (prévia e mensagens de voz), WebAssembly do RNNoise, WebSockets do PeerJS, YouTube e HLS. A permissão de microfone continua sendo solicitada pelo navegador.
+- HTML, scripts, estilos e WASM usam `Cache-Control: no-cache` com ETag: o navegador revalida os arquivos antes de reutilizá-los. Os recursos atualizados também têm uma versão na URL para evitar misturar o novo HTML com scripts antigos.
+- Depois do deploy, recarregue o site no celular. Para conferir a configuração publicada, a resposta de `/` deve conter `media-src 'self' blob:` e `'wasm-unsafe-eval'` no cabeçalho `Content-Security-Policy`, além de `Cache-Control: no-cache`.
+
+O modo puramente estático (`python -m http.server 8080` ou outra hospedagem) continua funcionando. Em hospedagens que enviam uma política CSP própria, ela também precisa permitir áudio `blob:` e WebAssembly; uma política enviada pelo servidor não pode ser relaxada pelo HTML.
 
 ## Limitações
 
@@ -65,5 +76,5 @@ Para convidar amigos de outras redes, publique a pasta em qualquer hospedagem es
 Com Node.js instalado, execute os testes de áudio, permissões, reconexão, emojis e mensagens de voz:
 
 ```bash
-node --test tests/communication.test.cjs
+npm test
 ```

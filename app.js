@@ -521,7 +521,7 @@
           [wasm] = await Promise.race([
             Promise.all([
               fetch(PATH + wasmFile).then((r) => { if (!r.ok) throw new Error('wasm ' + r.status); return r.arrayBuffer(); }),
-              ctx.audioWorklet.addModule(PATH + 'rnnoiseWorklet.js'),
+              ctx.audioWorklet.addModule(PATH + 'rnnoiseWorklet.js?v=20261116-server'),
               resume,
             ]),
             new Promise((_, reject) => {

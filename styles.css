@@ -434,12 +434,12 @@ input:focus { border-color: rgba(139, 92, 246, 0.6); background: rgba(0,0,0,0.35
 }
 
 /* ---------- Sidebar ---------- */
-.sidebar { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.sidebar { display: flex; flex-direction: column; gap: 16px; min-height: 0; min-width: 0; }
 .panel { padding: 16px; }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
 .panel-head h3 { font-size: 15px; }
 
-.participants { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.participants { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .participant {
   display: flex;
   align-items: center;
@@ -522,6 +522,8 @@ input:focus { border-color: rgba(139, 92, 246, 0.6); background: rgba(0,0,0,0.35
 .chat-form input { height: 40px; min-width: 0; }
 .chat-form .btn { flex-shrink: 0; }
 .chat-tools { display: flex; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+.chat-tools, .chat-form, .voice-composer { flex-shrink: 0; }
+.chat button { touch-action: manipulation; }
 .chat-tools .btn { font-size: 12px; height: 34px; padding: 0 10px; }
 .emoji-picker {
   max-height: 210px;
@@ -536,7 +538,9 @@ input:focus { border-color: rgba(139, 92, 246, 0.6); background: rgba(0,0,0,0.35
 .emoji-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; margin-bottom: 10px; }
 .emoji-grid:last-child { margin-bottom: 0; }
 .emoji-option { border: 0; border-radius: 8px; padding: 4px; background: transparent; font-size: 23px; cursor: pointer; transition: background .15s, transform .15s; }
-.emoji-option:hover { background: var(--surface-3); transform: scale(1.15); }
+@media (hover: hover) {
+  .emoji-option:hover { background: var(--surface-3); transform: scale(1.15); }
+}
 .emoji-option:focus-visible { outline: 2px solid var(--accent-2); }
 .voice-composer { padding: 12px; margin-bottom: 10px; border: 1px solid rgba(229,72,77,.3); border-radius: var(--radius-sm); background: rgba(229,72,77,.06); }
 #voice-status { display: block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
@@ -630,10 +634,15 @@ input:focus { border-color: rgba(139, 92, 246, 0.6); background: rgba(0,0,0,0.35
 .toast-warn { border-color: rgba(245, 165, 36, 0.45); }
 
 /* ---------- Responsivo ---------- */
+@media (pointer: coarse) {
+  .chat button { min-height: 44px; min-width: 44px; }
+  .emoji-grid { grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); }
+}
+
 @media (max-width: 1024px) {
   .hero { grid-template-columns: 1fr; gap: 36px; padding: 36px 0; }
   .room { height: auto; min-height: 100vh; min-height: 100dvh; }
-  .room-body { grid-template-columns: 1fr; }
+  .room-body { grid-template-columns: minmax(0, 1fr); }
   .player { flex: none; aspect-ratio: 16 / 9; min-height: 0; }
   .chat { min-height: 380px; max-height: 70vh; }
 }

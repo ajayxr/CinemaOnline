@@ -1,0 +1,11 @@
+{
+  "name": "cinemaonline",
+  "private": true,
+  "scripts": {
+    "start": "node server.cjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
