@@ -651,6 +651,11 @@ input:focus { border-color: rgba(139, 92, 246, 0.6); background: rgba(0,0,0,0.35
   .home { padding: 16px; }
   .tag { display: none; }
   .start-card { padding: 22px; }
+  .player-empty { gap: 6px; padding: 10px; }
+  .player-empty .empty-icon { width: 44px; height: 44px; }
+  .player-empty h3 { margin-top: 0; font-size: 16px; }
+  .player-empty p { font-size: 12px; line-height: 1.35; }
+  .player-empty .invite-box { display: none; }
   .topbar { padding: 0 12px; gap: 10px; }
   .brand-text, .hide-sm, .room-label { display: none; }
   .room-info { padding-left: 10px; }
