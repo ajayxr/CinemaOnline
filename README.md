@@ -18,9 +18,15 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
   - Filtro passa-alta: corta graves como batidas na mesa e pancadas
   - [RNNoise](https://github.com/xiph/rnnoise) (rede neural): reduz chiado, ventilador e teclado, sem os bloqueios adicionais de voz que podiam silenciar a fala
   - Alternar o filtro não reinicia a captura do microfone
+  - O áudio direto continua ativo durante a inicialização do RNNoise; o filtro só fica disponível depois da confirmação do processador, com saída mono para a chamada
   - Com o filtro desligado, a captura é enviada diretamente, com a supressão básica do navegador
   - Se o filtro falhar ou seu contexto de áudio for suspenso, o envio volta automaticamente à captura direta, com um aviso
 - Chat da sessão: fica só na memória e some quando a sala é encerrada
+  - Seletor com 36 emojis, organizados em reações, cinema e boas vibrações; insere na posição do cursor
+  - Mensagens de voz: clique em **Gravar áudio**, depois em **Parar gravação**; ouça a prévia e escolha **Enviar áudio** ou **Cancelar**
+  - A gravação usa uma captura separada: funciona mesmo com a chamada no mudo, sem desmutar sua voz ao vivo
+  - Até 60 segundos e 1 MB por áudio; sem reprodução automática. Os áudios são enviados aos participantes e entram no histórico temporário para quem chega depois
+  - Histórico limitado às 200 mensagens mais recentes e a 8 MB de áudio por navegador; o anfitrião compartilha as últimas 100 mensagens com novos participantes
 
 ## Como funciona
 
@@ -56,7 +62,7 @@ Para convidar amigos de outras redes, publique a pasta em qualquer hospedagem es
 
 ## Testes
 
-Com Node.js instalado, execute os testes de áudio, permissões e reconexão:
+Com Node.js instalado, execute os testes de áudio, permissões, reconexão, emojis e mensagens de voz:
 
 ```bash
 node --test tests/communication.test.cjs

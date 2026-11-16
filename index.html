@@ -176,8 +176,25 @@
             <span class="muted">Não é salvo</span>
           </div>
           <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+          <div class="chat-tools">
+            <button id="btn-emoji" class="btn btn-ghost" type="button" aria-expanded="false" aria-controls="emoji-picker" title="Escolher emoji">😊 <span>Emojis</span></button>
+            <button id="btn-record" class="btn btn-ghost" type="button" aria-label="Gravar mensagem de voz">
+              <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              Gravar áudio
+            </button>
+          </div>
+          <section id="emoji-picker" class="emoji-picker" aria-label="Escolha um emoji" hidden></section>
+          <div id="voice-composer" class="voice-composer" hidden>
+            <span id="voice-status" role="status"></span>
+            <audio id="voice-preview" controls preload="metadata" aria-label="Ouvir gravação antes de enviar" hidden></audio>
+            <div class="voice-actions">
+              <button id="btn-cancel-voice" class="btn btn-ghost" type="button">Cancelar</button>
+              <button id="btn-stop-voice" class="btn btn-danger" type="button">Parar gravação</button>
+              <button id="btn-send-voice" class="btn btn-primary" type="button" hidden>Enviar áudio</button>
+            </div>
+          </div>
           <form id="form-chat" class="chat-form">
-            <input id="chat-input" maxlength="500" placeholder="Escreva uma mensagem…" autocomplete="off">
+            <input id="chat-input" maxlength="500" placeholder="Escreva uma mensagem…" autocomplete="off" aria-label="Mensagem do chat">
             <button class="btn btn-primary btn-icon" type="submit" aria-label="Enviar">
               <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
             </button>

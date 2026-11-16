@@ -82,14 +82,30 @@ function app() {
   const contexts = [];
   const storage = new Map();
   const player = { loads: [], applies: [], time: 0, playing: true };
+  const controls = { workletStartup: 'ready' };
+  const makeElement = () => {
+    const node = new EventEmitter();
+    Object.assign(node, {
+      children: [], value: '', hidden: false, disabled: false,
+      dataset: {}, style: { setProperty() {} },
+      classList: { toggle(key, value) { this[key] = value; } },
+      setAttribute(key, value) { this[key] = value; },
+      removeAttribute(key) { delete this[key]; },
+      append(...children) { this.children.push(...children); },
+      appendChild(child) { this.children.push(child); return child; },
+      remove() { this.removed = true; },
+      focus() {}, pause() {}, load() {},
+      setRangeText(text, start, end) {
+        this.value = this.value.slice(0, start) + text + this.value.slice(end);
+        this.selectionStart = this.selectionEnd = start + text.length;
+      },
+    });
+    node.addEventListener = node.on.bind(node);
+    return node;
+  };
   const element = (selector) => {
     if (!elements.has(selector)) {
-      elements.set(selector, {
-        addEventListener() {}, append() {}, appendChild() {},
-        dataset: {}, style: { setProperty() {} },
-        classList: { toggle(key, value) { this[key] = value; } },
-        setAttribute(key, value) { this[key] = value; },
-      });
+      elements.set(selector, makeElement());
     }
     return elements.get(selector);
   };
@@ -97,11 +113,18 @@ function app() {
     constructor(...args) { super(...args); contexts.push(this); }
   }
   class Worklet extends AudioNode {
-    constructor(...args) { super(...args); this.options = args[2]; worklets.push(this); }
+    constructor(...args) {
+      super(...args);
+      this.options = args[2];
+      worklets.push(this);
+      queueMicrotask(() => {
+        if (controls.workletStartup) this.port.onmessage?.({ data: { type: controls.workletStartup, message: 'WASM initialization failed' } });
+      });
+    }
   }
   const context = vm.createContext({
-    console: { warn() {}, error() {} }, URL, Map, Set, Uint8Array,
-    document: { querySelector: element, createElement: element, addEventListener() {} },
+    console: { warn() {}, error() {} }, URL, Blob, ArrayBuffer, Map, Set, Uint8Array,
+    document: { querySelector: element, createElement: makeElement, addEventListener() {} },
     window: { AudioContext: Context, AudioWorkletNode: Worklet, WebAssembly: {} },
     AudioContext: Context, AudioWorkletNode: Worklet, BiquadFilterNode: AudioNode,
     Audio: class { setAttribute() {} async play() {} pause() {} },
@@ -133,7 +156,9 @@ function app() {
       toggleNoiseFilter, fallbackNoiseFilter, callPeer, maintainCalls,
       onIncomingCall, setupCall, attachAudio, attachPeerHandlers,
       onGuestConnection, handleGuestMessage, handleHostMessage,
-      hostHeartbeat, guestHeartbeat, connectToHost, teardown
+      hostHeartbeat, guestHeartbeat, connectToHost, teardown,
+      validVoiceMessage, startVoiceRecording, stopVoiceRecording,
+      cancelVoiceRecording, sendVoiceMessage, setupEmojis, sendChat, addChatMessage
     };
   `), context);
   const api = context.api;
@@ -145,7 +170,7 @@ function app() {
   api.state.peer.connect = (id) => new Connection(id);
   api.state.peer.reconnect = () => { api.state.peer.disconnected = false; };
   api.state.participants.set(api.state.myId, { id: api.state.myId, muted: true });
-  return { api, context, elements, messages, intervals, worklets, contexts, player, storage };
+  return { api, context, elements, messages, intervals, worklets, contexts, player, storage, controls };
 }
 
 test('both ends send their real microphone even when a call precedes permission', async () => {
@@ -285,6 +310,60 @@ test('worklet error or suspended filter falls back to a live raw microphone', as
   }
 });
 
+test('raw microphone stays live until WASM readiness and initialization errors fail open', async () => {
+  for (const result of ['ready', 'error']) {
+    const { api, controls, worklets, messages } = app();
+    controls.workletStartup = null;
+    const setup = api.setupMic(api.NoiseFilter.prepare());
+    await flush();
+    assert.equal(api.state.localStream, api.state.rawStream);
+    assert.equal(api.state.localStream.getAudioTracks()[0].enabled, true);
+    assert.equal(api.NoiseFilter.available, false);
+    worklets[0].port.onmessage({ data: { type: result, message: 'bad wasm' } });
+    await setup;
+    assert.equal(api.NoiseFilter.available, result === 'ready');
+    assert.equal(api.state.localStream, api.state.rawStream);
+    assert.equal(api.state.micAvailable, true);
+    if (result === 'error') assert.match(messages.at(-1), /áudio direto/);
+  }
+});
+
+test('WASM startup timeout preserves the raw microphone', async () => {
+  const { api, context, controls } = app();
+  controls.workletStartup = null;
+  await api.NoiseFilter.prepare();
+  context.setTimeout = (fn) => setTimeout(fn, 0);
+  await api.setupMic(Promise.resolve(true));
+  assert.equal(api.state.localStream, api.state.rawStream);
+  assert.equal(api.state.micAvailable, true);
+  assert.equal(api.NoiseFilter.available, false);
+});
+
+test('exiting during WASM initialization cancels its wait and releases capture', async () => {
+  const { api, controls } = app();
+  controls.workletStartup = null;
+  const setup = api.setupMic(api.NoiseFilter.prepare());
+  await flush();
+  const raw = api.state.rawStream;
+  api.state.ended = true;
+  api.state.peer.destroy = () => {};
+  api.teardown();
+  await setup;
+  assert.equal(raw.getAudioTracks()[0].readyState, 'ended');
+  assert.equal(api.NoiseFilter.available, false);
+});
+
+test('failed resume while enabling noise reduction restores raw audio rather than keeping a dead route', async () => {
+  const { api, contexts } = app();
+  await api.setupMic(api.NoiseFilter.prepare());
+  contexts[0].state = 'suspended';
+  contexts[0].resume = async () => { throw new Error('resume denied'); };
+  await api.toggleNoiseFilter();
+  assert.equal(api.state.localStream, api.state.rawStream);
+  assert.equal(api.state.rawStream.getAudioTracks()[0].enabled, true);
+  assert.equal(api.NoiseFilter.available, false);
+});
+
 test('unsupported filter and capture resolving after exit do not stop valid audio or leak capture', async () => {
   const first = app();
   first.storage.set('cinemaonline:anti-ruido', 'on');
@@ -393,4 +472,188 @@ test('explicit host shutdown still ends the session', () => {
   api.state.peer.destroy = () => {};
   api.handleHostMessage({ t: 'end' });
   assert.equal(api.state.ended, true);
+});
+
+function installRecorder(instance, options = {}) {
+  const recordings = [];
+  class Recorder extends EventEmitter {
+    static isTypeSupported(type) { return type.startsWith('audio/webm'); }
+    constructor(capture, config) {
+      super();
+      this.capture = capture;
+      this.mimeType = config.mimeType;
+      this.state = 'inactive';
+      recordings.push(this);
+    }
+    addEventListener(...args) { this.on(...args); }
+    start() { this.state = 'recording'; }
+    stop() {
+      this.state = 'inactive';
+      this.emit('dataavailable', { data: new Blob([new Uint8Array(options.bytes ?? 32)], { type: this.mimeType }) });
+      this.emit('stop');
+    }
+  }
+  instance.context.MediaRecorder = instance.context.window.MediaRecorder = Recorder;
+  instance.api.state.joined = true;
+  instance.api.state.hostConn = new Connection('host');
+  instance.api.state.myName = 'Guest';
+  return recordings;
+}
+
+test('voice messages can be previewed and sent while the live call stays muted', async () => {
+  const instance = app();
+  const recordings = installRecorder(instance);
+  const { api, elements } = instance;
+  await api.setupMic(Promise.resolve(false));
+  api.setMuted(true);
+  const liveTrack = api.state.rawStream.getAudioTracks()[0];
+  await api.startVoiceRecording();
+  assert.equal(recordings[0].capture.getAudioTracks()[0].enabled, true);
+  assert.equal(liveTrack.enabled, false);
+  api.stopVoiceRecording();
+  assert.equal(recordings[0].capture.getAudioTracks()[0].readyState, 'ended');
+  assert.equal(liveTrack.readyState, 'live');
+  assert.equal(elements.get('#voice-preview').hidden, false);
+  assert.equal(api.state.hostConn.messages.filter((m) => m.t === 'chat-audio').length, 0);
+  await api.sendVoiceMessage();
+  const sent = api.state.hostConn.messages.at(-1);
+  assert.equal(sent.t, 'chat-audio');
+  assert.equal(api.validVoiceMessage(sent), true);
+  assert.equal(sent.audio.byteLength, 32);
+  assert.equal(elements.get('#voice-composer').hidden, true);
+  assert.equal(liveTrack.enabled, false);
+});
+
+test('voice messages are relayed with trusted identity and included in room history', async () => {
+  const guest = app();
+  installRecorder(guest);
+  await guest.api.startVoiceRecording();
+  guest.api.stopVoiceRecording();
+  await guest.api.sendVoiceMessage();
+  const host = app();
+  host.api.state.isHost = true;
+  const conn = new Connection('guest');
+  host.api.handleGuestMessage(conn, { t: 'hello', name: 'Guest' });
+  const other = new Connection('other');
+  host.api.handleGuestMessage(other, { t: 'hello', name: 'Other' });
+  const payload = { ...guest.api.state.hostConn.messages.at(-1), from: 'forged', name: 'forged' };
+  host.api.handleGuestMessage(conn, payload);
+  const stored = host.api.state.chat.at(-1);
+  assert.equal(stored.from, 'guest');
+  assert.equal(stored.name, 'Guest');
+  assert.equal(other.messages.at(-1).t, 'chat-audio');
+  assert.equal(host.elements.get('#chat-messages').children.at(-1).children.at(-1).controls, true);
+  const newcomer = new Connection('new');
+  host.api.handleGuestMessage(newcomer, { t: 'hello', name: 'New' });
+  const history = newcomer.messages[0].chat;
+  assert.equal(history.at(-1).audio.byteLength, 32);
+});
+
+test('invalid voice payloads are refused and audio history has a byte budget', () => {
+  const { api } = app();
+  api.state.isHost = true;
+  const conn = new Connection('guest');
+  api.handleGuestMessage(conn, { t: 'hello', name: 'Guest' });
+  const message = { t: 'chat-audio', audio: new ArrayBuffer(1024 * 1024), mime: 'audio/webm;codecs=opus', duration: 60 };
+  for (const invalid of [
+    { audio: new ArrayBuffer(0) }, { audio: new ArrayBuffer(1024 * 1024 + 1) },
+    { audio: 'data:text/html,test' }, { mime: 'text/html' },
+    { duration: 0 }, { duration: 61 }, { duration: NaN },
+  ]) {
+    api.handleGuestMessage(conn, { ...message, ...invalid });
+    assert.equal(conn.messages.at(-1).t, 'chat-error');
+    assert.equal(api.state.chat.length, 0);
+  }
+  for (let i = 0; i < 10; i++) api.handleGuestMessage(conn, message);
+  assert.equal(api.state.chat.length, 8);
+});
+
+test('cancel, empty recordings and oversized recordings release capture without sending', async () => {
+  for (const bytes of [0, 1024 * 1024 + 1, 32]) {
+    const instance = app();
+    const recordings = installRecorder(instance, { bytes });
+    await instance.api.startVoiceRecording();
+    if (bytes === 32) instance.api.cancelVoiceRecording();
+    else instance.api.stopVoiceRecording();
+    assert.equal(recordings[0].capture.getAudioTracks()[0].readyState, 'ended');
+    assert.equal(instance.api.state.hostConn.messages.length, 0);
+    assert.equal(instance.elements.get('#voice-composer').hidden, true);
+  }
+});
+
+test('cancelled permission request and recording teardown release only their own capture', async () => {
+  const instance = app();
+  installRecorder(instance);
+  let resolve;
+  instance.context.navigator.mediaDevices.getUserMedia = () => new Promise((r) => { resolve = r; });
+  const pending = instance.api.startVoiceRecording();
+  instance.api.cancelVoiceRecording();
+  const raw = stream();
+  resolve(raw);
+  await pending;
+  assert.equal(raw.getAudioTracks()[0].readyState, 'ended');
+  instance.context.navigator.mediaDevices.getUserMedia = async () => stream();
+  await instance.api.startVoiceRecording();
+  instance.api.state.peer.destroy = () => {};
+  instance.api.state.ended = true;
+  instance.api.teardown();
+  assert.equal(instance.elements.get('#voice-composer').hidden, true);
+  assert.equal(instance.api.state.hostConn.messages.length, 0);
+});
+
+test('disconnected voice send keeps the preview for a retry', async () => {
+  const instance = app();
+  installRecorder(instance);
+  await instance.api.startVoiceRecording();
+  instance.api.stopVoiceRecording();
+  instance.api.state.hostConn.open = false;
+  await instance.api.sendVoiceMessage();
+  assert.equal(instance.elements.get('#voice-preview').hidden, false);
+  assert.match(instance.messages.at(-1), /conexão/);
+  instance.api.cancelVoiceRecording();
+});
+
+test('emoji picker inserts at the selection and refuses to split an emoji at the text limit', () => {
+  const { api, context, elements, messages } = app();
+  api.setupEmojis();
+  const smile = elements.get('#emoji-picker').children[1].children[0];
+  const input = context.document.querySelector('#chat-input');
+  input.value = 'Oi mundo';
+  input.selectionStart = 3;
+  input.selectionEnd = 8;
+  smile.emit('click');
+  assert.equal(input.value, 'Oi 😀');
+  input.value = 'x'.repeat(499);
+  input.selectionStart = input.selectionEnd = 499;
+  smile.emit('click');
+  assert.equal(input.value.length, 499);
+  assert.match(messages.at(-1), /500/);
+});
+
+test('worklet passes through audio before readiness and reports asynchronous WASM failure', async () => {
+  const worklet = readFileSync(path.join(__dirname, '..', 'vendor', 'noise-suppressor', 'rnnoiseWorklet.js'), 'utf8');
+  const code = worklet.slice(worklet.indexOf('class CinemaNoiseProcessor'));
+  for (const failure of [false, true]) {
+    let resolve;
+    let Processor;
+    const statuses = [];
+    vm.runInNewContext(code, {
+      AudioWorkletProcessor: class { constructor() { this.port = { postMessage: (m) => statuses.push(m) }; } },
+      s: { loadBinary: () => new Promise((r, reject) => { resolve = failure ? () => reject(new Error('bad wasm')) : r; }) },
+      p: () => ({ process: (input, output) => output[0].set(input[0].map((s) => s * 0.5)), destroy() {} }),
+      registerProcessor: (name, ctor) => { Processor = ctor; },
+    });
+    const processor = new Processor({ processorOptions: { maxChannels: 1 } });
+    const input = new Float32Array([0.2, -0.3, 0.1]);
+    const output = new Float32Array(3);
+    processor.process([[input]], [[output]]);
+    assert.deepEqual(output, input);
+    resolve({});
+    await flush();
+    assert.equal(statuses[0].type, failure ? 'error' : 'ready');
+    processor.process([[input]], [[output]]);
+    assert.deepEqual(output, failure ? input : input.map((s) => s * 0.5));
+    processor.port.onmessage({ data: 'destroy' });
+    assert.equal(processor.process([[input]], [[output]]), false);
+  }
 });

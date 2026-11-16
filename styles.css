@@ -519,7 +519,32 @@ input:focus { border-color: rgba(139, 92, 246, 0.6); background: rgba(0,0,0,0.35
 .msg-system { align-self: center; font-size: 12px; color: var(--muted); background: rgba(255,255,255,0.03); padding: 4px 12px; border-radius: 999px; text-align: center; }
 
 .chat-form { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
-.chat-form input { height: 40px; }
+.chat-form input { height: 40px; min-width: 0; }
+.chat-form .btn { flex-shrink: 0; }
+.chat-tools { display: flex; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+.chat-tools .btn { font-size: 12px; height: 34px; padding: 0 10px; }
+.emoji-picker {
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(139,92,246,0.12), transparent), var(--surface-2);
+}
+.emoji-picker h4 { margin: 0 0 6px; color: var(--muted); font-size: 11px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; margin-bottom: 10px; }
+.emoji-grid:last-child { margin-bottom: 0; }
+.emoji-option { border: 0; border-radius: 8px; padding: 4px; background: transparent; font-size: 23px; cursor: pointer; transition: background .15s, transform .15s; }
+.emoji-option:hover { background: var(--surface-3); transform: scale(1.15); }
+.emoji-option:focus-visible { outline: 2px solid var(--accent-2); }
+.voice-composer { padding: 12px; margin-bottom: 10px; border: 1px solid rgba(229,72,77,.3); border-radius: var(--radius-sm); background: rgba(229,72,77,.06); }
+#voice-status { display: block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.voice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.voice-actions .btn { height: 32px; font-size: 12px; padding: 0 10px; }
+.voice-composer audio, .msg-audio { display: block; width: 100%; min-width: 0; height: 36px; margin: 6px 0 10px; }
+.msg:has(.msg-audio) { width: 100%; }
+.btn:disabled { opacity: .5; cursor: wait; }
 
 /* ---------- Modais ---------- */
 .modal {

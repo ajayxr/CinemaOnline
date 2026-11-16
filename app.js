@@ -7,6 +7,10 @@
   const TIMEOUT_MS = 15000;
   const DRIFT_TOLERANCE = 2.5;
   const CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const MAX_VOICE_BYTES = 1024 * 1024;
+  const MAX_VOICE_SECONDS = 60;
+  const MAX_CHAT_BYTES = 8 * 1024 * 1024;
+  const AUDIO_MIME = /^audio\/(?:webm|ogg|mp4)(?:;codecs=[a-zA-Z0-9., -]+)?$/;
   const MIC_ICON = '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
   const MIC_OFF_ICON = '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
 
@@ -502,6 +506,8 @@
     let available = false;
     let enabled = true;
     let preparation = null;
+    let processorReady = null;
+    let cancelProcessorReady = null;
 
     async function prepare() {
       if (preparation) return preparation;
@@ -535,7 +541,7 @@
       return preparation;
     }
 
-    function build(raw, startEnabled) {
+    async function build(raw, startEnabled) {
       try {
         rawStream = raw;
         enabled = startEnabled;
@@ -543,7 +549,24 @@
         source = ctx.createMediaStreamSource(raw);
         const highpass = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 100, Q: 0.7 });
         const rnnoise = new AudioWorkletNode(ctx, '@sapphi-red/web-noise-suppressor/rnnoise', {
-          ...mono, processorOptions: { maxChannels: 1, wasmBinary: wasm },
+          ...mono, outputChannelCount: [1], processorOptions: { maxChannels: 1, wasmBinary: wasm },
+        });
+        processorReady = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('O processador de ruído não respondeu')), 5000);
+          cancelProcessorReady = () => { clearTimeout(timer); resolve(); };
+          const fail = (error) => { clearTimeout(timer); reject(error); };
+          rnnoise.port.onmessage = ({ data }) => {
+            if (data.type === 'ready') { clearTimeout(timer); resolve(); }
+            else if (data.type === 'error') {
+              const error = new Error(data.message);
+              fail(error);
+              if (available) fallbackNoiseFilter(error.message);
+            }
+          };
+          rnnoise.addEventListener('processorerror', () => {
+            fail(new Error('O processador de redução de ruído parou'));
+            if (available) fallbackNoiseFilter('O processador de redução de ruído parou.');
+          });
         });
         dest = ctx.createMediaStreamDestination();
         dest.channelCount = 1;
@@ -552,18 +575,20 @@
         nodes = [highpass, rnnoise];
         route();
         if (ctx.state !== 'running') throw new Error('AudioContext suspenso');
-        rnnoise.addEventListener('processorerror', () => fallbackNoiseFilter('O processador de redução de ruído parou.'));
         ctx.addEventListener('statechange', () => {
           if (available && enabled && ctx && ctx.state !== 'running' && !state.ended) {
             fallbackNoiseFilter('A redução de ruído foi suspensa pelo navegador.');
           }
         });
+        await processorReady;
+        if (state.ended || !ctx) return raw;
         available = true;
         return startEnabled ? dest.stream : raw;
       } catch (err) {
         console.warn('[anti-ruído] falha ao montar filtro:', err);
         rawStream = null;
         destroy();
+        if (!state.ended) toast('Não foi possível iniciar o anti-ruído. O microfone continua com áudio direto.', 'warn');
         return raw;
       }
     }
@@ -578,6 +603,7 @@
 
     async function setEnabled(on) {
       if (!available || !ctx) throw new Error('Redução de ruído indisponível');
+      await processorReady;
       if (on && ctx.state !== 'running') await ctx.resume();
       if (on && ctx.state !== 'running') throw new Error('AudioContext suspenso');
       enabled = on;
@@ -586,6 +612,8 @@
     }
 
     function destroy() {
+      if (cancelProcessorReady) cancelProcessorReady();
+      cancelProcessorReady = null;
       nodes.forEach((n) => {
         try { if (n.port) n.port.postMessage('destroy'); n.disconnect(); } catch { /* ignora */ }
       });
@@ -600,6 +628,7 @@
       wasm = null;
       available = false;
       preparation = null;
+      processorReady = null;
     }
 
     return {
@@ -688,7 +717,12 @@
         });
         toast('O microfone foi desconectado ou perdeu a permissão. Clique no microfone para ativá-lo novamente.', 'warn', 7000);
       });
-      await setLocalStream(filterReady ? NoiseFilter.build(raw, wantFilter) : raw);
+      await setLocalStream(raw);
+      if (filterReady) {
+        const filtered = await NoiseFilter.build(raw, wantFilter);
+        if (state.ended) return;
+        await setLocalStream(filtered);
+      }
       if (previousStream && previousStream !== previousRaw) previousStream.getTracks().forEach((t) => t.stop());
       if (previousRaw) previousRaw.getTracks().forEach((t) => t.stop());
       publishMicrophoneState();
@@ -729,6 +763,7 @@
   }
 
   async function toggleNoiseFilter() {
+    if ($('#btn-nr').disabled) return;
     if (!NoiseFilter.available) {
       toast(state.micAvailable
         ? 'A redução de ruído com IA não é suportada neste navegador. Usando o filtro básico.'
@@ -736,12 +771,15 @@
       return;
     }
     const on = !NoiseFilter.enabled;
+    $('#btn-nr').disabled = true;
     try {
       await setLocalStream(await NoiseFilter.setEnabled(on));
     } catch (err) {
       console.warn('[anti-ruído]', err);
-      toast('Não foi possível alterar a redução de ruído. O modo atual foi mantido.', 'warn');
+      await fallbackNoiseFilter(err.message);
       return;
+    } finally {
+      $('#btn-nr').disabled = false;
     }
     localStorage.setItem('cinemaonline:anti-ruido', on ? 'on' : 'off');
     updateNoiseButton();
@@ -1083,6 +1121,18 @@
         broadcast(m, id);
         break;
       }
+      case 'chat-audio': {
+        if (!validVoiceMessage(msg)) {
+          console.warn('[chat] mensagem de áudio inválida:', id);
+          conn.send({ t: 'chat-error', text: 'O áudio não foi aceito. O limite é de 1 MB e 60 segundos.' });
+          return;
+        }
+        const m = { t: 'chat-audio', from: id, name: p.name, audio: msg.audio, mime: msg.mime, duration: msg.duration, ts: Date.now() };
+        pushChat(m);
+        addChatMessage(m);
+        broadcast(m, id);
+        break;
+      }
       case 'video': {
         const v = sanitizeVideoMsg(msg, id, p.name);
         if (!v) return;
@@ -1141,7 +1191,10 @@
 
   function pushChat(m) {
     state.chat.push(m);
-    if (state.chat.length > 200) state.chat.shift();
+    let bytes = state.chat.reduce((sum, item) => sum + (item.audio?.byteLength || 0), 0);
+    while (state.chat.length > 200 || bytes > MAX_CHAT_BYTES) {
+      bytes -= state.chat.shift().audio?.byteLength || 0;
+    }
   }
 
   /* ================= Convidado ================= */
@@ -1263,7 +1316,12 @@
         break;
 
       case 'chat':
+      case 'chat-audio':
         addChatMessage(msg);
+        break;
+
+      case 'chat-error':
+        toast(String(msg.text).slice(0, 200), 'warn');
         break;
 
       case 'system':
@@ -1460,6 +1518,16 @@
 
   /* ================= Render: participantes e chat ================= */
 
+  const chatMedia = [];
+  let voiceRecording = null;
+  let voiceDraft = null;
+
+  function validVoiceMessage(m) {
+    return m.audio instanceof ArrayBuffer && m.audio.byteLength > 0 && m.audio.byteLength <= MAX_VOICE_BYTES
+      && typeof m.mime === 'string' && AUDIO_MIME.test(m.mime)
+      && Number.isFinite(m.duration) && m.duration > 0 && m.duration <= MAX_VOICE_SECONDS;
+  }
+
   function renderParticipants() {
     const list = $('#participants');
     list.innerHTML = '';
@@ -1492,6 +1560,11 @@
   }
 
   function addChatMessage(m) {
+    if (m.t === 'chat-audio' && !validVoiceMessage(m)) {
+      console.warn('[chat] áudio recebido inválido');
+      toast('Uma mensagem de áudio inválida foi recusada.', 'warn');
+      return;
+    }
     const box = $('#chat-messages');
     const mine = m.from === state.myId;
     const wrap = el('div', 'msg' + (mine ? ' mine' : ''));
@@ -1499,12 +1572,43 @@
     const name = el('span', 'msg-name', mine ? 'Você' : m.name);
     name.style.setProperty('--hue', hueFor(m.from));
     meta.append(name, el('time', null, clock(m.ts)));
-    wrap.append(meta, el('div', 'msg-text', m.text));
+    wrap.append(meta);
+    let url = null;
+    let audio = null;
+    if (m.t === 'chat-audio') {
+      audio = el('audio', 'msg-audio');
+      audio.controls = true;
+      audio.preload = 'none';
+      audio.setAttribute('aria-label', `Mensagem de voz de ${m.name}, ${formatTime(m.duration)}`);
+      url = URL.createObjectURL(new Blob([m.audio], { type: m.mime }));
+      audio.src = url;
+      audio.addEventListener('error', () => toast('Este navegador não conseguiu reproduzir a mensagem de áudio.', 'warn'));
+      wrap.append(el('div', 'muted', `Mensagem de voz · ${formatTime(m.duration)}`), audio);
+    } else {
+      wrap.append(el('div', 'msg-text', m.text));
+    }
     appendToChat(box, wrap, mine);
+    chatMedia.push({ node: wrap, url, audio, bytes: m.audio?.byteLength || 0 });
+    let bytes = chatMedia.reduce((sum, item) => sum + item.bytes, 0);
+    while (chatMedia.length > 200 || bytes > MAX_CHAT_BYTES) {
+      const old = chatMedia.shift();
+      bytes -= old.bytes;
+      releaseChatMedia(old);
+    }
   }
 
   function addSystemMessage(text) {
     appendToChat($('#chat-messages'), el('div', 'msg-system', text), false);
+  }
+
+  function releaseChatMedia(item) {
+    if (item.audio) {
+      item.audio.pause();
+      item.audio.removeAttribute('src');
+      item.audio.load();
+    }
+    if (item.url) URL.revokeObjectURL(item.url);
+    item.node.remove();
   }
 
   function appendToChat(box, node, forceScroll) {
@@ -1517,6 +1621,7 @@
     const input = $('#chat-input');
     const text = input.value.trim().slice(0, 500);
     if (!text) return;
+    if (!canSendChat()) return;
     input.value = '';
     const m = { t: 'chat', from: state.myId, name: state.myName, text, ts: Date.now() };
     addChatMessage(m);
@@ -1525,6 +1630,194 @@
       broadcast(m);
     } else {
       sendToHost({ t: 'chat', text });
+    }
+  }
+
+  function canSendChat() {
+    if (!state.joined || state.ended || (!state.isHost && !state.hostConn?.open)) {
+      toast('Aguarde a conexão com a sala para enviar mensagens.', 'warn');
+      return false;
+    }
+    return true;
+  }
+
+  function setupEmojis() {
+    const groups = [
+      ['Reações', [['😀', 'Sorriso'], ['😂', 'Rindo muito'], ['🥹', 'Emocionado'], ['😍', 'Apaixonado'], ['😎', 'Estiloso'], ['🤔', 'Pensando'], ['😱', 'Surpreso'], ['😭', 'Chorando'], ['🤣', 'Gargalhada'], ['🥳', 'Festa'], ['🤯', 'Impressionado'], ['😴', 'Sono']]],
+      ['Sessão de cinema', [['🍿', 'Pipoca'], ['🎬', 'Cinema'], ['🎥', 'Câmera'], ['🎞️', 'Filme'], ['📺', 'Televisão'], ['🎧', 'Fones'], ['🦸', 'Herói'], ['👻', 'Fantasma'], ['👽', 'Alienígena'], ['🍕', 'Pizza'], ['🥤', 'Refrigerante'], ['⭐', 'Estrela']]],
+      ['Boas vibrações', [['❤️', 'Coração'], ['🔥', 'Fogo'], ['👏', 'Aplausos'], ['👍', 'Gostei'], ['👎', 'Não gostei'], ['🙌', 'Comemoração'], ['✨', 'Brilho'], ['💯', 'Perfeito'], ['👀', 'De olho'], ['🤝', 'Parceria'], ['👋', 'Olá'], ['💜', 'Coração roxo']]],
+    ];
+    const picker = $('#emoji-picker');
+    for (const [title, emojis] of groups) {
+      picker.appendChild(el('h4', null, title));
+      const grid = el('div', 'emoji-grid');
+      for (const [emoji, label] of emojis) {
+        const button = el('button', 'emoji-option', emoji);
+        button.type = 'button';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        button.addEventListener('click', () => {
+          const input = $('#chat-input');
+          const start = input.selectionStart ?? input.value.length;
+          const end = input.selectionEnd ?? start;
+          if (input.value.length - (end - start) + emoji.length > 500) {
+            toast('A mensagem pode ter até 500 caracteres.', 'warn');
+            return;
+          }
+          input.setRangeText(emoji, start, end, 'end');
+          input.focus();
+        });
+        grid.appendChild(button);
+      }
+      picker.appendChild(grid);
+    }
+    const close = () => {
+      picker.hidden = true;
+      $('#btn-emoji').setAttribute('aria-expanded', 'false');
+    };
+    $('#btn-emoji').addEventListener('click', () => {
+      picker.hidden = !picker.hidden;
+      $('#btn-emoji').setAttribute('aria-expanded', String(!picker.hidden));
+    });
+    document.addEventListener('click', (e) => {
+      if (!picker.contains(e.target) && !$('#btn-emoji').contains(e.target)) close();
+    });
+    picker.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { close(); $('#btn-emoji').focus(); }
+    });
+  }
+
+  function resetVoiceComposer() {
+    const preview = $('#voice-preview');
+    preview.pause();
+    preview.removeAttribute('src');
+    preview.load();
+    preview.hidden = true;
+    if (voiceDraft) URL.revokeObjectURL(voiceDraft.url);
+    voiceDraft = null;
+    $('#voice-composer').hidden = true;
+    $('#btn-record').disabled = false;
+    $('#btn-send-voice').disabled = false;
+  }
+
+  function cancelVoiceRecording() {
+    const recording = voiceRecording;
+    voiceRecording = null;
+    if (recording) {
+      clearInterval(recording.timer);
+      if (recording.recorder && recording.recorder.state !== 'inactive') recording.recorder.stop();
+      recording.stream?.getTracks().forEach((track) => track.stop());
+    }
+    resetVoiceComposer();
+  }
+
+  function stopVoiceRecording() {
+    if (voiceRecording?.recorder?.state === 'recording') {
+      $('#btn-stop-voice').disabled = true;
+      voiceRecording.recorder.stop();
+    }
+  }
+
+  async function startVoiceRecording() {
+    if (voiceRecording || voiceDraft || !canSendChat()) return;
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+      toast('Este navegador não suporta gravação de áudio. Tente Chrome, Edge, Firefox ou Safari atualizado.', 'warn');
+      return;
+    }
+    const recording = { chunks: [], bytes: 0, stream: null, recorder: null, timer: null };
+    voiceRecording = recording;
+    $('#btn-record').disabled = true;
+    $('#voice-composer').hidden = false;
+    $('#voice-status').textContent = 'Aguardando permissão do microfone…';
+    $('#btn-stop-voice').hidden = true;
+    $('#btn-send-voice').hidden = true;
+    try {
+      const capture = await requestMicrophone();
+      if (voiceRecording !== recording || state.ended) {
+        capture.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      recording.stream = capture;
+      const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
+        .find((type) => MediaRecorder.isTypeSupported(type));
+      if (!mimeType) throw new Error('Nenhum formato de gravação compatível');
+      const recorder = new MediaRecorder(capture, { mimeType, audioBitsPerSecond: 64000 });
+      recording.recorder = recorder;
+      recorder.addEventListener('dataavailable', ({ data }) => {
+        if (voiceRecording !== recording || !data.size) return;
+        recording.bytes += data.size;
+        if (recording.bytes > MAX_VOICE_BYTES) {
+          toast('O áudio ultrapassou 1 MB. Grave uma mensagem mais curta.', 'warn');
+          cancelVoiceRecording();
+        } else recording.chunks.push(data);
+      });
+      recorder.addEventListener('error', (event) => {
+        console.error('[chat] gravação:', event.error);
+        if (voiceRecording === recording) {
+          toast('Não foi possível gravar o áudio. Tente novamente.', 'error');
+          cancelVoiceRecording();
+        }
+      });
+      recorder.addEventListener('stop', () => {
+        clearInterval(recording.timer);
+        capture.getTracks().forEach((track) => track.stop());
+        if (voiceRecording !== recording) return;
+        voiceRecording = null;
+        if (state.ended) { resetVoiceComposer(); return; }
+        const blob = new Blob(recording.chunks, { type: recorder.mimeType });
+        if (!blob.size) {
+          toast('A gravação ficou vazia. Tente gravar novamente.', 'warn');
+          resetVoiceComposer();
+          return;
+        }
+        voiceDraft = { blob, duration: Math.min(MAX_VOICE_SECONDS, Math.max(0.1, (Date.now() - recording.started) / 1000)), url: URL.createObjectURL(blob) };
+        $('#voice-preview').src = voiceDraft.url;
+        $('#voice-preview').hidden = false;
+        $('#voice-status').textContent = `Ouça antes de enviar · ${formatTime(voiceDraft.duration)}`;
+        $('#btn-stop-voice').hidden = true;
+        $('#btn-send-voice').hidden = false;
+      });
+      recording.started = Date.now();
+      recorder.start(250);
+      $('#btn-stop-voice').disabled = false;
+      $('#btn-stop-voice').hidden = false;
+      const tick = () => {
+        const seconds = (Date.now() - recording.started) / 1000;
+        $('#voice-status').textContent = `Gravando · ${formatTime(seconds)} / 01:00 — mesmo com a chamada no mudo`;
+        if (seconds >= MAX_VOICE_SECONDS) stopVoiceRecording();
+      };
+      recording.timer = setInterval(tick, 200);
+      tick();
+    } catch (error) {
+      console.warn('[chat] microfone:', error);
+      if (voiceRecording === recording) {
+        const denied = error.name === 'NotAllowedError' || error.name === 'SecurityError';
+        toast(denied
+          ? 'Permita o microfone nas configurações deste site para gravar áudio.'
+          : 'Não foi possível iniciar a gravação. Verifique o microfone e o suporte a áudio do navegador.', 'warn', 6000);
+        cancelVoiceRecording();
+      }
+    }
+  }
+
+  async function sendVoiceMessage() {
+    const draft = voiceDraft;
+    if (!draft || $('#btn-send-voice').disabled || !canSendChat()) return;
+    $('#btn-send-voice').disabled = true;
+    try {
+      const audio = await draft.blob.arrayBuffer();
+      if (voiceDraft !== draft || !canSendChat()) return;
+      const m = { t: 'chat-audio', from: state.myId, name: state.myName, audio, mime: draft.blob.type, duration: draft.duration, ts: Date.now() };
+      if (!validVoiceMessage(m)) throw new Error('Formato ou tamanho de áudio inválido');
+      if (state.isHost) { pushChat(m); broadcast(m); }
+      else sendToHost({ t: m.t, audio, mime: m.mime, duration: m.duration });
+      addChatMessage(m);
+      resetVoiceComposer();
+    } catch (error) {
+      console.error('[chat] envio de áudio:', error);
+      toast('Não foi possível enviar o áudio. Sua gravação foi mantida para tentar novamente.', 'error');
+    } finally {
+      $('#btn-send-voice').disabled = false;
     }
   }
 
@@ -1544,6 +1837,10 @@
   }
 
   function teardown() {
+    cancelVoiceRecording();
+    chatMedia.forEach(releaseChatMedia);
+    chatMedia.length = 0;
+    state.chat = [];
     state.timers.forEach(clearInterval);
     state.timers = [];
     for (const id of [...state.calls.keys()]) closeCall(id);
@@ -1600,6 +1897,14 @@
   /* ================= Eventos ================= */
 
   function bindEvents() {
+    setupEmojis();
+    $('#btn-record').addEventListener('click', startVoiceRecording);
+    $('#btn-stop-voice').addEventListener('click', stopVoiceRecording);
+    $('#btn-cancel-voice').addEventListener('click', cancelVoiceRecording);
+    $('#btn-send-voice').addEventListener('click', sendVoiceMessage);
+    $('#voice-preview').addEventListener('error', () => {
+      toast('Este navegador não conseguiu reproduzir a prévia. Tente abrir a sala no Chrome, Edge, Firefox ou Safari.', 'warn', 6000);
+    });
     $('#form-create').addEventListener('submit', (e) => {
       e.preventDefault();
       const name = askName('#home-name');
