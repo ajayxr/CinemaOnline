@@ -49,6 +49,31 @@ test('cache revalidation and HEAD preserve headers without sending stale content
   assert.deepEqual(await changed.arrayBuffer(), body);
 });
 
+test('Tokyvideo page URLs resolve to the official embed without accepting arbitrary hosts', async (t) => {
+  const upstreamRequests = [];
+  const server = createServer({
+    fetchImpl: async (url) => {
+      upstreamRequests.push(url);
+      return new Response(
+        '<input value=\'<iframe src="https://www.tokyvideo.com/embed/789077"></iframe>\'>',
+        { status: 200, headers: { 'Content-Type': 'text/html' } },
+      );
+    },
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const pageUrl = 'https://www.tokyvideo.com/video/sample-video';
+  const resolved = await fetch(`${base}/api/tokyvideo-embed?url=${encodeURIComponent(pageUrl)}`);
+  assert.equal(resolved.status, 200);
+  assert.deepEqual(await resolved.json(), { embedUrl: 'https://www.tokyvideo.com/embed/789077' });
+  assert.deepEqual(upstreamRequests, [pageUrl]);
+
+  const rejected = await fetch(`${base}/api/tokyvideo-embed?url=${encodeURIComponent('https://example.com/video/sample-video')}`);
+  assert.equal(rejected.status, 400);
+  assert.equal(upstreamRequests.length, 1);
+});
+
 test('private files, malformed paths and unsupported methods are not served', async (t) => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

@@ -6,7 +6,8 @@ Assista a vídeos em sincronia com até 4 pessoas, com voz e chat em tempo real.
 
 - Crie uma sala e convide amigos por link (`.../#sala=codigo`)
 - No máximo 4 participantes por sala (o 5º é recusado)
-- Vídeos do YouTube ou links diretos (`.mp4`, `.webm`, `.m3u8`), com play, pausa e avanço sincronizados para todos
+- Vídeos do YouTube e links diretos (`.mp4`, `.webm`, `.m3u8`), com play, pausa e avanço sincronizados para todos
+- Links de páginas do Tokyvideo abrem o player oficial incorporado; cada participante controla a própria reprodução, sem sincronização de play, pausa ou posição
 - Controles próprios da sala: **voltar 30s**, **play/pausar**, **avançar 30s** e barra de progresso
   - Atalhos: **Espaço**/**K** para play/pausar, **←**/**J** para voltar 30s, **→**/**L** para avançar 30s
   - Arrastar a barra do próprio YouTube também sincroniza
@@ -51,6 +52,8 @@ Abra `http://localhost:8080`.
 
 Para convidar amigos de outras redes, publique a pasta em qualquer hospedagem estática com HTTPS, como GitHub Pages, Netlify, Vercel ou Cloudflare Pages.
 
+O suporte a páginas do Tokyvideo usa a rota `/api/tokyvideo-embed` do servidor Node (`server.cjs`) para localizar o embed oficial. Ele não funciona em hospedagem puramente estática.
+
 ### Railway: um único serviço
 
 - Publique estas alterações no **serviço atual**, mantendo o mesmo repositório e domínio. Não crie outro serviço.
@@ -68,6 +71,7 @@ O modo puramente estático (`python -m http.server 8080` ou outra hospedagem) co
 - Alguns vídeos do YouTube bloqueiam a incorporação e não podem ser reproduzidos.
 - O navegador embutido do VS Code não tem os codecs do YouTube e mostra a tela preta. Use Chrome, Edge, Firefox ou Safari.
 - Links diretos dependem de o servidor do vídeo permitir a reprodução no navegador. Páginas de sites como Netflix não funcionam.
+- No Tokyvideo, cada participante usa os controles do player incorporado; a plataforma não oferece ao app controles externos para sincronizar a reprodução.
 - Em redes muito restritivas (algumas corporativas), a conexão P2P pode falhar.
 - O sistema operacional pode suspender o navegador ou o microfone em segundo plano, especialmente em celulares. Mantenha a página do anfitrião aberta e ativa; a recuperação depende de a rede e o navegador voltarem a funcionar.
 

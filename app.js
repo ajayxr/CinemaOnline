@@ -152,16 +152,18 @@
     $('#activity-text').textContent = text;
   }
 
-  /* ================= Player (YouTube + HTML5/HLS) ================= */
+  /* ================= Player (YouTube + HTML5/HLS + Tokyvideo) ================= */
 
   const Player = (() => {
     const ytHost = $('#yt-host');
+    const embedHost = $('#embed-host');
     const video = $('#html-player');
     const empty = $('#player-empty');
     const unlock = $('#player-unlock');
 
-    let kind = null;          // 'youtube' | 'html' | null
+    let kind = null;          // 'youtube' | 'html' | 'tokyvideo' | null
     let yt = null;
+    let externalFrame = null;
     let ytReady = false;
     let ytApi = null;
     let hls = null;
@@ -186,7 +188,7 @@
     video.addEventListener('seeked', () => emit('seek'));
     video.addEventListener('error', () => {
       if (kind === 'html' && video.getAttribute('src') !== null) {
-        toast('Não foi possível reproduzir este vídeo. Use um link direto (.mp4, .webm, .m3u8) ou do YouTube.', 'error', 6000);
+        toast('Não foi possível reproduzir este vídeo. Use um link direto (.mp4, .webm, .m3u8), do YouTube ou do Tokyvideo.', 'error', 6000);
       }
     });
 
@@ -206,6 +208,10 @@
 
       const host = u.hostname.replace(/^(www|m|music)\./, '');
       let id = null;
+      if (['tokyvideo.com', 'www.tokyvideo.com'].includes(u.hostname.toLowerCase()) && !u.port && !u.username && !u.password
+        && (/^\/video\/[^/]+\/?$/.test(u.pathname) || /^\/embed\/\d+\/?$/.test(u.pathname))) {
+        return { type: 'tokyvideo', url: u.href };
+      }
       if (host === 'youtu.be') {
         id = u.pathname.slice(1).split('/')[0];
       } else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
@@ -239,6 +245,9 @@
       ytReady = false;
       ytHost.innerHTML = '';
       ytHost.hidden = true;
+      embedHost.innerHTML = '';
+      embedHost.hidden = true;
+      externalFrame = null;
       if (hls) { hls.destroy(); hls = null; }
       video.pause();
       video.removeAttribute('src');
@@ -303,6 +312,37 @@
         return;
       }
 
+      if (src.type === 'tokyvideo') {
+        kind = 'tokyvideo';
+        embedHost.hidden = false;
+        try {
+          const response = await fetch('/api/tokyvideo-embed?url=' + encodeURIComponent(src.url));
+          const result = await response.json();
+          if (!response.ok || !result || typeof result.embedUrl !== 'string') throw new Error('Falha ao resolver o embed');
+          const embedUrl = new URL(result.embedUrl);
+          if (embedUrl.origin !== 'https://www.tokyvideo.com' || !/^\/embed\/\d+$/.test(embedUrl.pathname)) {
+            throw new Error('URL de incorporação inválida');
+          }
+          if (myToken !== token) return;
+          externalFrame = el('iframe');
+          externalFrame.title = 'Vídeo do Tokyvideo';
+          externalFrame.allow = 'autoplay; fullscreen; picture-in-picture';
+          externalFrame.allowFullscreen = true;
+          externalFrame.referrerPolicy = 'strict-origin-when-cross-origin';
+          externalFrame.src = embedUrl.href;
+          embedHost.appendChild(externalFrame);
+          pending = null;
+          setActivity('Tokyvideo: use os controles do player; a reprodução não é sincronizada');
+          toast('O player do Tokyvideo abriu. Cada participante controla a própria reprodução; os controles da sala não se aplicam.', 'warn', 9000);
+        } catch (error) {
+          if (myToken !== token) return;
+          embedHost.hidden = true;
+          toast('Não foi possível abrir este vídeo do Tokyvideo. Confira o link e tente novamente.', 'error', 7000);
+          console.warn('[player] falha ao carregar Tokyvideo:', error);
+        }
+        return;
+      }
+
       kind = 'html';
       video.hidden = false;
       video.addEventListener('loadedmetadata', () => {
@@ -333,6 +373,10 @@
       if (kind === 'youtube') return ytReady;
       if (kind === 'html') return video.readyState >= 1;
       return false;
+    }
+
+    function canControl() {
+      return kind === 'youtube' || kind === 'html';
     }
 
     function getTime() {
@@ -406,7 +450,7 @@
 
     // Aplica um comando vindo de outro participante, sem reemitir o evento.
     function apply(action, time) {
-      if (!kind) return;
+      if (!canControl()) return;
       if (!ready()) {
         const wasPlaying = pending ? pending.playing : false;
         pending = { time, playing: action === 'play' ? true : action === 'pause' ? false : wasPlaying };
@@ -428,7 +472,7 @@
     }
 
     return {
-      parse, load, reset, apply, ready, getTime, getDuration, isPlaying,
+      parse, load, reset, apply, ready, canControl, getTime, getDuration, isPlaying,
       get kind() { return kind; },
       onLocal(cb) { listener = cb; },
     };
@@ -1447,6 +1491,10 @@
       toast('Carregue um vídeo primeiro.', 'warn');
       return;
     }
+    if (!Player.canControl()) {
+      toast('Este player não permite sincronizar a reprodução pela sala.', 'warn');
+      return;
+    }
     const duration = Player.getDuration();
     time = Math.max(0, duration ? Math.min(time, duration - 0.5) : time);
     Player.apply(action, time);
@@ -1464,8 +1512,9 @@
   }
 
   function updateControls() {
-    const ready = !!Player.kind && Player.ready();
-    $('#controls').classList.toggle('disabled', !Player.kind);
+    const canControl = Player.canControl();
+    const ready = canControl && Player.ready();
+    $('#controls').classList.toggle('disabled', !canControl);
     $('#ctl-play').classList.toggle('playing', ready && Player.isPlaying());
     if (seeking) return;
     const duration = ready ? Player.getDuration() : 0;
@@ -1504,7 +1553,7 @@
     const input = $('#video-url');
     const src = Player.parse(input.value);
     if (!src) {
-      toast('URL inválida. Use um link do YouTube ou um arquivo de vídeo direto.', 'error');
+      toast('URL inválida. Use YouTube, Tokyvideo ou um link direto de vídeo.', 'error');
       input.focus();
       return;
     }

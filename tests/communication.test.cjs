@@ -158,7 +158,8 @@ function app() {
       onGuestConnection, handleGuestMessage, handleHostMessage,
       hostHeartbeat, guestHeartbeat, connectToHost, teardown,
       validVoiceMessage, startVoiceRecording, stopVoiceRecording,
-      cancelVoiceRecording, sendVoiceMessage, setupEmojis, sendChat, addChatMessage
+      cancelVoiceRecording, sendVoiceMessage, setupEmojis, sendChat, addChatMessage,
+      parseVideoUrl: Player.parse
     };
   `), context);
   const api = context.api;
@@ -172,6 +173,17 @@ function app() {
   api.state.participants.set(api.state.myId, { id: api.state.myId, muted: true });
   return { api, context, elements, messages, intervals, worklets, contexts, player, storage, controls };
 }
+
+test('parses Tokyvideo pages for embedding and retains direct-media types', () => {
+  const { api } = app();
+  const tokyvideo = api.parseVideoUrl('https://www.tokyvideo.com/video/sample-video');
+  assert.equal(tokyvideo.type, 'tokyvideo');
+  assert.equal(tokyvideo.url, 'https://www.tokyvideo.com/video/sample-video');
+  assert.equal(api.parseVideoUrl('https://www.tokyvideo.com/embed/789077').type, 'tokyvideo');
+  assert.notEqual(api.parseVideoUrl('https://m.tokyvideo.com/video/sample-video').type, 'tokyvideo');
+  assert.equal(api.parseVideoUrl('https://example.com/movie.mp4').type, 'file');
+  assert.equal(api.parseVideoUrl('https://example.com/stream.m3u8').type, 'hls');
+});
 
 test('both ends send their real microphone even when a call precedes permission', async () => {
   const caller = app();

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20261116-server">
+  <link rel="stylesheet" href="styles.css?v=20261119-tokyvideo">
 </head>
 <body>
   <div id="file-warning" class="banner" hidden>
@@ -115,12 +115,13 @@
       <section class="stage">
         <form id="form-url" class="url-bar">
           <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input id="video-url" type="text" inputmode="url" placeholder="Cole a URL do vídeo (YouTube, .mp4, .webm, .m3u8)" autocomplete="off">
+          <input id="video-url" type="text" inputmode="url" placeholder="Cole a URL do vídeo (YouTube, Tokyvideo, .mp4, .webm, .m3u8)" autocomplete="off">
           <button class="btn btn-primary" type="submit">Carregar</button>
         </form>
 
         <div class="player" id="player">
           <div id="yt-host" class="player-layer" hidden></div>
+          <div id="embed-host" class="player-layer" hidden></div>
           <video id="html-player" class="player-layer" controls playsinline hidden></video>
           <div id="player-empty" class="player-empty">
             <div class="empty-icon"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></div>
@@ -236,6 +237,6 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" charset="utf-8"></script>
-  <script src="app.js?v=20261116-server" charset="utf-8"></script>
+  <script src="app.js?v=20261119-tokyvideo" charset="utf-8"></script>
 </body>
 </html>
